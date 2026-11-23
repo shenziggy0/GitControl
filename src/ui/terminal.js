@@ -19,7 +19,10 @@ export async function showTerminal(projectId, enabled, container, report, canFoc
   container.append(element);
   const term = new Terminal({
     fontFamily: 'Menlo, monospace', fontSize: 12, scrollback: 4000, cursorBlink: true,
-    theme: { background: '#E3E3E3', foreground: '#111111', cursor: '#D53740', selectionBackground: '#CBCBCB' }
+    theme: {
+      background: '#111111', foreground: '#FFFFFF', cursor: '#FFFFFF',
+      selectionBackground: '#444444'
+    }
   });
   const fit = new FitAddon();
   term.loadAddon(fit);

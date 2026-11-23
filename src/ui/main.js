@@ -1,6 +1,12 @@
 import Alpine from 'alpinejs';
 import { Channel, invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
+import {
+  createIcons, ArrowDown, ArrowLeft, ArrowUp, ArrowUpRight, ChevronLeft, ChevronRight, ChevronUp,
+  CircleCheck, Cloud, FileDiff, Files, FileText, FolderGit2, GitBranch,
+  GitCommitHorizontal, GitCompareArrows, GitFork, ListFilter, MessageSquare, Monitor,
+  PanelLeft, Plus, RefreshCw, Search, Settings, Square, SquareTerminal, Tag, X
+} from 'lucide';
 import template from './workspace.html?raw';
 import { mountGraph } from './graph.js';
 import { showTerminal, closeTerminal } from './terminal.js';
@@ -16,10 +22,10 @@ const groups = [
 
 function session() {
   return {
-    view:'status', chat:false, chatOrigin:null, chatCommit:null, term:false, messages:[], draft:'', running:null, selected:[],
+    view:'status', detailTrail:[], statusScroll:0, chat:false, chatOrigin:null, chatCommit:null, term:false, messages:[], draft:'', running:null, selected:[],
     repo:null, discovery:null, childrenOpen:true, remotes:{}, counts:{}, error:'', refreshing:false, refreshingRemote:false, dirty:false,
     all:[], revision:0, graphBusy:false, historyKey:null, headFiles:null, headFilesError:false, headFilesOpen:false,
-    scope:'all', page:0, focusSha:null, focusSerial:0, commit:null, detail:null, diff:null, branch:null
+    scope:'all', page:0, focusSha:null, focusSerial:0
   };
 }
 
@@ -109,15 +115,18 @@ Alpine.data('workspace',()=>({
   get fileCount(){return new Set((this.s.repo?.files||[]).map(f=>f.path)).size},
   get graphTags(){return new Map((this.s.repo?.tags||[]).map(x=>[x.oid,x.name]))},
   get headCommit(){return this.s.all.find(c=>c.sha===this.s.repo?.head)},
+  get detailView(){return this.s.detailTrail.at(-1);},
+  get detailOpen(){return this.detailView?.view===this.s.view;},
   get viewedBranch(){
-    const branch=this.s.branch;
+    const branch=this.detailView?.branch;
     if (!branch) return null;
     return (branch.cloud ? this.cloud : this.s.repo?.local||[]).find(ref=>ref.name===branch.name)||null;
   },
   get branchCommit(){return this.s.all.find(c=>c.sha===this.viewedBranch?.oid);},
   get workingBranchText(){
     const name=this.s.repo?.branch;
-    if (name) return !this.s.branch?.cloud&&this.s.branch?.name===name ? '当前工作分支' : '当前工作分支 '+name;
+    const branch=this.detailView?.branch;
+    if (name) return !branch?.cloud&&branch?.name===name ? '当前工作分支' : '当前工作分支 '+name;
     const head=this.s.repo?.head;
     return head ? '当前工作位置 · 分离 HEAD '+this.short(head) : '当前仓库尚无提交';
   },
@@ -362,17 +371,79 @@ Alpine.data('workspace',()=>({
     this.s.focusSha=oid;
     this.s.focusSerial++;
   },
-  async inspect(commit){
-    if(!commit)return;
-    const s=this.s,id=this.projectId;
-    this.locate(commit.sha);
-    s.commit=commit;s.view='commit';s.detail=null;
-    try{
-      const result=await invoke('repo_detail',{projectId:id,oid:commit.sha});
-      if(s.commit?.sha===commit.sha)s.detail=result;
-    }catch(error){if(s.commit?.sha===commit.sha)s.detail=[];this.report(error);}
+  editorBuffer(view){
+    return this.$refs.editor.querySelector('[data-view="'+view+'"]');
   },
-  branchView(branch,cloud){this.s.branch={...branch,cloud};this.s.view='branch';if(branch.available!==false)this.locate(branch.oid);},
+  rememberEditorScroll(){
+    const s = this.s;
+    const buffer = this.editorBuffer(s.view);
+    if (!buffer) return;
+    if (s.view === 'status') s.statusScroll = buffer.scrollTop;
+    else if (this.detailOpen) this.detailView.scroll = buffer.scrollTop;
+  },
+  showEditorView(view, scroll){
+    const s = this.s;
+    s.view = view;
+    this.$nextTick(() => {
+      if (this.s !== s || s.view !== view) return;
+      const buffer = this.editorBuffer(view);
+      if (buffer) buffer.scrollTop = scroll;
+    });
+  },
+  showStatus(){
+    if (this.s.view === 'status') return;
+    this.rememberEditorScroll();
+    this.showEditorView('status', this.s.statusScroll);
+  },
+  resumeDetail(){
+    if (!this.detailView || this.detailOpen) return;
+    this.rememberEditorScroll();
+    this.showEditorView(this.detailView.view, this.detailView.scroll);
+  },
+  openDetail(detail){
+    const s = this.s;
+    if (this.detailOpen && this.detailView.key === detail.key) return null;
+    this.rememberEditorScroll();
+    if (s.view === 'status') s.detailTrail = [];
+    s.detailTrail.push({ ...detail, scroll: 0 });
+    this.showEditorView(detail.view, 0);
+    return this.detailView;
+  },
+  backFromDetail(){
+    this.s.detailTrail.pop();
+    const detail = this.detailView;
+    if (detail) {
+      this.showEditorView(detail.view, detail.scroll);
+      const oid = detail.commit?.sha ?? detail.branch?.oid;
+      if (oid && this.s.all.some(commit => commit.sha === oid)) this.locate(oid);
+    } else {
+      this.showEditorView('status', this.s.statusScroll);
+    }
+    this.$refs.editor.focus({preventScroll:true});
+  },
+  closeDetail(){
+    this.s.detailTrail = [];
+    this.showEditorView('status', this.s.statusScroll);
+    this.$refs.statusTab.focus({preventScroll:true});
+  },
+  async inspect(commit){
+    if (!commit) return;
+    const id = this.projectId;
+    const detail = this.openDetail({view:'commit', key:'commit/'+commit.sha, title:this.short(commit.sha), commit, files:null, error:''});
+    this.locate(commit.sha);
+    if (!detail) return;
+    try {
+      detail.files = await invoke('repo_detail',{projectId:id,oid:commit.sha});
+      detail.error = '';
+    } catch(error) {
+      detail.error = String(error);
+    }
+  },
+  branchView(branch,cloud){
+    const key = (cloud ? 'remote/' : 'local/') + branch.name;
+    this.openDetail({view:'branch', key, title:branch.name, branch:{...branch,cloud}});
+    if (branch.available !== false) this.locate(branch.oid);
+  },
   async copyBranchOid(){
     const oid=this.viewedBranch?.oid;
     if (!oid) return;
@@ -380,14 +451,17 @@ Alpine.data('workspace',()=>({
     catch(error){this.report(error);}
   },
   async viewPatch(file,oid){
-    const s=this.s,id=this.projectId;
-    const key=crypto.randomUUID();
-    s.diff={key,filename:file.path,label:oid?this.short(oid):groups.find(g=>g.id===file.group)?.label,lines:['正在读取…']};
-    s.view='diff';
-    try{
-      const patch=await invoke('repo_patch',{projectId:id,oid,path:file.path,group:file.group||''});
-      if(s.diff?.key===key)s.diff.lines=patch?patch.split('\n'):['没有可显示的文本差异。'];
-    }catch(error){if(s.diff?.key===key)s.diff.lines=[String(error)];}
+    const id = this.projectId;
+    const key = JSON.stringify([oid, file.group, file.path]);
+    const label = oid ? this.short(oid) : groups.find(group => group.id === file.group)?.label;
+    const detail = this.openDetail({view:'diff', key, title:file.path, label, lines:['正在读取…']});
+    if (!detail) return;
+    try {
+      const patch = await invoke('repo_patch',{projectId:id,oid,path:file.path,group:file.group||''});
+      detail.lines = patch ? patch.split('\n') : ['没有可显示的文本差异。'];
+    } catch(error) {
+      detail.lines = [String(error)];
+    }
   },
   openSearch(trigger){
     if (!this.palette) {
@@ -430,9 +504,9 @@ Alpine.data('workspace',()=>({
   openChat(){
     if (!this.project||this.s.view==='chat') return;
     const s=this.s;
-    const source=this.$refs.editor.querySelector('[data-view="'+s.view+'"]');
+    const source=this.editorBuffer(s.view);
     s.chatOrigin={view:s.view,scroll:source?.scrollTop||0,scope:s.scope,page:s.page,sha:s.focusSha,revision:s.revision};
-    s.chatCommit=s.view==='commit' ? s.commit?.sha : null;
+    s.chatCommit=s.view==='commit' ? this.detailView?.commit?.sha : null;
     s.chat=true;
     s.view='chat';
   },
@@ -451,7 +525,7 @@ Alpine.data('workspace',()=>({
     if (origin.sha&&origin.revision!==s.revision) this.locate(origin.sha);
     this.$nextTick(()=>{
       if (this.s!==s||s.view!==origin.view) return;
-      const source=this.$refs.editor.querySelector('[data-view="'+origin.view+'"]');
+      const source=this.editorBuffer(origin.view);
       if (source) source.scrollTop=origin.scroll;
     });
   },
@@ -493,6 +567,17 @@ Alpine.data('workspace',()=>({
   async cancel(){if(this.s.running)try{await invoke('agent_cancel',{projectId:this.projectId,requestId:this.s.running});}catch(error){this.report(error);}}
 }));
 
-document.querySelector('#app').innerHTML=template;
-document.querySelector('#app').setAttribute('@keydown.window.capture','shortcut($event)');
+const app = document.querySelector('#app');
+app.innerHTML = template;
+createIcons({
+  root: app,
+  inTemplates: true,
+  icons: {
+    ArrowDown, ArrowLeft, ArrowUp, ArrowUpRight, ChevronLeft, ChevronRight, ChevronUp,
+    CircleCheck, Cloud, FileDiff, Files, FileText, FolderGit2, GitBranch,
+    GitCommitHorizontal, GitCompareArrows, GitFork, ListFilter, MessageSquare, Monitor,
+    PanelLeft, Plus, RefreshCw, Search, Settings, Square, SquareTerminal, Tag, X
+  }
+});
+app.setAttribute('@keydown.window.capture','shortcut($event)');
 Alpine.start();

@@ -1,3 +1,5 @@
+import { Cloud, createElement, GitBranch } from 'lucide';
+
 // Each lane names the next ancestor reached by a line. An unmerged tip
 // starts a new lane; it has no incoming edge from the preceding commit.
 function historyLayout(commits, head) {
@@ -40,8 +42,7 @@ function refBadge(ref) {
   const origin=ref.kind==='local'?'本地':'云端';
   badge.title=origin+' '+ref.name+' · '+ref.oid;
   badge.setAttribute('aria-label',badge.title);
-  const svg=graphElement('svg',{'aria-hidden':'true',viewBox:'0 0 24 24'});
-  svg.append(graphElement('use',{href:ref.kind==='local'?'#i-branch':'#i-cloud'}));
+  const svg=createElement(ref.kind==='local'?GitBranch:Cloud,{class:'lucide','aria-hidden':'true'});
   const label=document.createElement('span');
   label.textContent=ref.name;
   badge.append(svg,label);
@@ -51,7 +52,8 @@ function refBadge(ref) {
 export function mountGraph(state, Alpine, pageSize) {
   const list=document.getElementById('history-list');
   let refsBySha = new Map();
-  const height = row => refsBySha.has(row.commit.sha) ? 48 : 28;
+  const height = row => refsBySha.has(row.commit.sha) ? 56 : 36;
+  const nodeOffset = 18;
   const x = lane => 10+lane*13;
   let layoutKey = '';
   let rows = [];
@@ -69,11 +71,11 @@ export function mountGraph(state, Alpine, pageSize) {
       const d='M '+x(e.from)+' '+top+' C '+x(e.from)+' '+mid+' '+x(e.to)+' '+mid+' '+x(e.to)+' '+bottom;
       svg.append(graphElement('path',{d,class:e.main?'trunk':'side-edge'}));
     }
-    if (start>0) for (const e of rows[start-1].edges) edge(e,14-height(rows[start-1]),14);
+    if (start>0) for (const e of rows[start-1].edges) edge(e,nodeOffset-height(rows[start-1]),nodeOffset);
     const nodes=[];
     for (const row of visible) {
       const {commit,lane,edges}=row;
-      const h=height(row), at=y+14;
+      const h=height(row), at=y+nodeOffset;
       for (const e of edges) edge(e,at,at+h);
       maxLane=Math.max(maxLane,lane);
       const isHead=commit.sha===state.s.repo?.head;

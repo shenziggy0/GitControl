@@ -12,7 +12,8 @@
     "@tauri-apps/api": "^2",
     "@xterm/addon-fit": "^0.10",
     "@xterm/xterm": "^5.5",
-    "alpinejs": "^3.14"
+    "alpinejs": "^3.14",
+    "lucide": "^1.78.0"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2",
