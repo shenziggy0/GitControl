@@ -1,0 +1,35 @@
+name: 打包 macOS 安装包
+
+on: workflow_dispatch
+
+permissions:
+  contents: read
+
+jobs:
+  macos:
+    runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [aarch64-apple-darwin, x86_64-apple-darwin]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - run: npm ci
+      - name: 构建应用并生成安装包
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          npm run tauri -- build --target "$TARGET" --bundles app -- --locked
+          python3 scripts/package_macos.py --app "src-tauri/target/$TARGET/release/bundle/macos/GitControl.app" --output-dir release
+      - uses: actions/upload-artifact@v4
+        with:
+          name: GitControl-${{ matrix.target }}
+          path: release/*.dmg
+          if-no-files-found: error

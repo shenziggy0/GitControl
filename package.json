@@ -1,0 +1,21 @@
+{
+  "name": "gitcontrol",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1 --port 1420 --strictPort",
+    "build": "vite build",
+    "tauri": "tauri"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2",
+    "@xterm/addon-fit": "^0.10",
+    "@xterm/xterm": "^5.5",
+    "alpinejs": "^3.14"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2",
+    "vite": "7.1.2"
+  }
+}

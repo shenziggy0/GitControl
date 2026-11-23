@@ -1,0 +1,498 @@
+import Alpine from 'alpinejs';
+import { Channel, invoke } from '@tauri-apps/api/core';
+import { listen } from '@tauri-apps/api/event';
+import template from './workspace.html?raw';
+import { mountGraph } from './graph.js';
+import { showTerminal, closeTerminal } from './terminal.js';
+import './style.css';
+
+const PAGE_SIZE = 60;
+let selectionQueue = Promise.resolve();
+let searchTrigger = null;
+const groups = [
+  {id:'staged', label:'已暂存'}, {id:'unstaged', label:'未暂存'},
+  {id:'untracked', label:'未跟踪'}, {id:'conflict', label:'冲突'}
+];
+
+function session() {
+  return {
+    view:'status', chat:false, chatOrigin:null, chatCommit:null, term:false, messages:[], draft:'', running:null, selected:[],
+    repo:null, discovery:null, childrenOpen:true, remotes:{}, counts:{}, error:'', refreshing:false, refreshingRemote:false, dirty:false,
+    all:[], revision:0, graphBusy:false, historyKey:null, headFiles:null, headFilesError:false, headFilesOpen:false,
+    scope:'all', page:0, focusSha:null, focusSerial:0, commit:null, detail:null, diff:null, branch:null
+  };
+}
+
+function branchPairs(s) {
+  const cloud = Object.values(s.remotes).flatMap(r=>r.refs);
+  const used = new Set();
+  const rows = (s.repo?.local||[]).map(local => {
+    const state = s.remotes[local.remote];
+    const name = local.remote+'/'+local.merge.replace(/^refs\/heads\//,'');
+    const remote = state?.refs.find(r=>r.name===name);
+    if (remote) used.add(remote.name);
+    return { key:'local/'+local.name, name:local.name, local:{...local,
+      gone:!!local.merge&&!!state?.timestamp&&!state.error&&!remote,
+      counts:s.counts[local.name]}, remote };
+  });
+  for (const remote of cloud) {
+    if (!used.has(remote.name)) rows.push({key:'remote/'+remote.name,name:remote.name,local:null,remote});
+  }
+  return rows;
+}
+
+Alpine.data('workspace',()=>({
+  projects:[], sessions:{}, projectId:null, empty:session(), sidebar:true, projectsOpen:true,
+  branchesOpen:true, remotesOpen:false, tagsOpen:false, palette:false, query:'', notice:'',
+  claudeExecutable:null,
+  selectionVersion:0, openingChild:false,
+  get project(){return this.projects.find(p=>p.id===this.projectId)},
+  get s(){return this.sessions[this.projectId]||this.empty},
+  get active(){return this.s.repo?.kind==='git'&&!this.s.error},
+  get discoveryText(){
+    const scan=this.s.discovery;
+    if (!scan||scan.busy) return '正在扫描两层子目录…';
+    if (scan.error) return scan.error;
+    const {repositories,unreadableCount}=scan.result;
+    if (unreadableCount) return `已发现 ${repositories.length} 个仓库，有 ${unreadableCount} 个目录未能检查。`;
+    if (!repositories.length) return '已检查此文件夹下两层目录，发现 0 个 Git 仓库。';
+    return `发现 ${repositories.length} 个仓库`;
+  },
+  get projectGroups(){
+    const projectsByPath=new Map(this.projects.map(project=>[project.path,project]));
+    const owners=new Map();
+    for (const parent of this.projects) {
+      const scan=this.sessions[parent.id]?.discovery?.result;
+      for (const candidate of scan?.repositories||[]) {
+        const path=parent.path.replace(/\/$/,'')+'/'+candidate.relativePath;
+        const currentOwner=owners.get(path);
+        if (!currentOwner||parent.path.length>currentOwner.parent.path.length) {
+          owners.set(path,{parent,candidate,project:projectsByPath.get(path),path});
+        }
+      }
+    }
+    const childrenByParent=new Map();
+    for (const child of owners.values()) {
+      const {id}=child.parent;
+      if (!childrenByParent.has(id)) childrenByParent.set(id,[]);
+      childrenByParent.get(id).push(child);
+    }
+    return this.projects.filter(project=>!owners.has(project.path)).map(project=>({
+      project,
+      children:(childrenByParent.get(project.id)||[]).sort((a,b)=>a.candidate.relativePath.localeCompare(b.candidate.relativePath)),
+      discovered:this.sessions[project.id]?.discovery?.result?.repositories.length
+    }));
+  },
+  get cloud(){return Object.values(this.s.remotes).flatMap(r=>r.refs)},
+  get remoteChecks(){return (this.s.repo?.remotes||[]).map(name=>this.s.remotes[name]||{name,refs:[],pending:true});},
+  get cloudCountText(){
+    const checks=this.remoteChecks;
+    if (!checks.length) return '未配置远端';
+    const verified=checks.filter(r=>r.timestamp&&!r.pending&&!r.error).length;
+    if (verified===checks.length) return String(this.cloud.length);
+    if (checks.some(r=>r.pending)) {
+      if (this.s.lastCloudCount!=null) return this.s.lastCloudCount+' · 更新中';
+      return verified ? '已核对 '+verified+'/'+checks.length+' 个远端 · 查询中' : '查询中';
+    }
+    if (verified) return '已核对 '+verified+'/'+checks.length+' 个远端';
+    return checks.every(r=>r.timestamp) ? '上次核对 '+this.cloud.length+' 个 · 更新失败' : '未能核对';
+  },
+  get refs(){return [
+    ...(this.s.repo?.local||[]).map(r=>({...r,kind:'local'})),
+    ...this.cloud.map(r=>({...r,kind:'remote'}))
+  ]},
+  get pairs(){return branchPairs(this.s)},
+  get current(){return this.pairs.find(p=>p.local?.name===this.s.repo?.branch)?.local},
+  get stale(){return (this.s.repo?.tracking||[]).filter(ref=>
+    Object.values(this.s.remotes).some(r=>r.timestamp&&!r.error&&ref.name.startsWith(r.name+'/')&&!r.refs.some(x=>x.name===ref.name)))},
+  get changeGroups(){return groups.map(group=>({...group,files:(this.s.repo?.files||[]).filter(f=>f.group===group.id)}))},
+  get fileCount(){return new Set((this.s.repo?.files||[]).map(f=>f.path)).size},
+  get graphTags(){return new Map((this.s.repo?.tags||[]).map(x=>[x.oid,x.name]))},
+  get headCommit(){return this.s.all.find(c=>c.sha===this.s.repo?.head)},
+  get viewedBranch(){
+    const branch=this.s.branch;
+    if (!branch) return null;
+    return (branch.cloud ? this.cloud : this.s.repo?.local||[]).find(ref=>ref.name===branch.name)||null;
+  },
+  get branchCommit(){return this.s.all.find(c=>c.sha===this.viewedBranch?.oid);},
+  get workingBranchText(){
+    const name=this.s.repo?.branch;
+    if (name) return !this.s.branch?.cloud&&this.s.branch?.name===name ? '当前工作分支' : '当前工作分支 '+name;
+    const head=this.s.repo?.head;
+    return head ? '当前工作位置 · 分离 HEAD '+this.short(head) : '当前仓库尚无提交';
+  },
+  get history(){
+    if (!this.active) return [];
+    if (this.s.scope==='all') return this.s.all;
+    const tip=this.refs.find(r=>r.kind+'/'+r.name===this.s.scope);
+    if (!tip || tip.available===false) return [];
+    const byId = new Map(this.s.all.map(c=>[c.sha,c]));
+    const seen = new Set(), pending = [tip.oid];
+    while(pending.length){
+      const oid = pending.pop();
+      if (seen.has(oid)) continue;
+      seen.add(oid);
+      for (const parent of byId.get(oid)?.parents.split(' ')||[]) if(parent) pending.push(parent);
+    }
+    return this.s.all.filter(c=>seen.has(c.sha));
+  },
+  get pageCount(){return Math.ceil(this.history.length/PAGE_SIZE)},
+  get pageRange(){return (this.s.page*PAGE_SIZE+1)+'–'+Math.min((this.s.page+1)*PAGE_SIZE,this.history.length)+' / '+this.history.length},
+  get matches(){
+    const q=this.query.trim().toLowerCase();
+    const all=this.projects.map(p=>({label:p.name,kind:'项目',project:p.id}));
+    for (const ref of this.refs) all.push({label:ref.name,kind:ref.kind==='local'?'本地':'云端',ref});
+    for (const commit of this.s.all) all.push({label:commit.subject,kind:this.short(commit.sha),commit});
+    return all.filter(hit=>(hit.kind+' '+hit.label).toLowerCase().includes(q)).slice(0,12);
+  },
+  async init(){
+    mountGraph(this,Alpine,PAGE_SIZE);
+    try {
+      await listen('workspace-changed',({payload})=>{if(payload===this.projectId)this.refresh(payload,false)});
+      window.addEventListener('focus',()=>{if(this.projectId)this.refresh(this.projectId,false)});
+      const config=await invoke('project_list');
+      this.projects=config.projects;
+      this.claudeExecutable=config.claudePath;
+      const id=config.selected||this.projects[0]?.id;
+      if(id)await this.selectProject(id);
+    } catch(error){this.report(error);}
+  },
+  report(error){this.notice=String(error);},
+  short(oid){return oid?.slice(0,7)||'';},
+  trackingText(branch){
+    if(!branch)return this.s.repo?.head?'':'空仓库';
+    if(branch.gone)return '上游已删除';
+    if(this.s.remotes[branch.remote]?.error && this.s.remotes[branch.remote]?.timestamp)return '按上次云端核对结果';
+    if(!branch.merge)return '尚未关联上游';
+    if(branch.counts?.every(n=>n===0))return '已同步';
+    if(branch.counts)return '已比较';
+    return '同步状态待核对';
+  },
+  remoteText(r){
+    const last=r.timestamp?' · '+new Date(r.timestamp*1000).toLocaleString('zh-CN'):'';
+    if (r.pending) return r.name+' · 正在核对云端…'+(last?' · 上次成功'+last:'');
+    if (r.error) return r.name+' · '+r.error+(last?' · 上次成功'+last:'');
+    return r.name+(r.history_error?' · '+r.history_error:' · 已核对')+last;
+  },
+  async addProject(){
+    try {
+      const p=await invoke('project_open');
+      if(!p)return;
+      this.rememberProject(p);
+      await this.selectProject(p.id);
+    }catch(error){this.report(error);}
+  },
+  rememberProject(project){
+    if (!this.projects.some(item=>item.id===project.id)) this.projects.push(project);
+  },
+  async selectProject(id,focusTerminal=true){
+    this.notice='';
+    if(!this.sessions[id])this.sessions[id]=session();
+    this.selectionVersion++;
+    this.projectId=id;
+    if (this.s.repo?.kind==='folder') {
+      this.projectsOpen=true;
+      this.s.childrenOpen=true;
+    }
+    this.$nextTick(()=>this.syncTerminal(focusTerminal));
+    selectionQueue=selectionQueue.then(()=>invoke('project_select',{projectId:id})).catch(error=>this.report(error));
+    await this.refresh(id,true);
+    await selectionQueue;
+  },
+  async scanChildren(id){
+    const s=this.sessions[id];
+    if (s?.repo?.kind!=='folder'||s.discovery?.busy) return;
+    s.childOpenError='';
+    s.discovery={busy:true,result:s.discovery?.result,error:''};
+    const request=s.discovery;
+    try {
+      const result=await invoke('project_scan_children',{parentProjectId:id});
+      if (this.sessions[id]===s&&s.discovery===request) s.discovery={busy:false,result,error:''};
+    } catch(error) {
+      if (this.sessions[id]===s&&s.discovery===request) s.discovery={busy:false,result:null,error:String(error)};
+    }
+  },
+  async openChild(parentId,relativePath){
+    if (this.openingChild) return;
+    this.openingChild=true;
+    this.notice='';
+    const parent=this.sessions[parentId];
+    if (parent) parent.childOpenError='';
+    const version=this.selectionVersion;
+    try {
+      const project=await invoke('project_open_child',{parentProjectId:parentId,relativePath});
+      this.rememberProject(project);
+      if (this.selectionVersion===version) await this.selectProject(project.id);
+    } catch(error) {
+      if (this.selectionVersion===version) {
+        if (this.projectId===parentId&&parent) parent.childOpenError=String(error);
+        else this.report(error);
+      }
+    } finally {
+      this.openingChild=false;
+    }
+  },
+  async removeProject(id){
+    try{
+      const settings=await invoke('project_remove',{projectId:id});
+      await closeTerminal(id).catch(()=>{});
+      delete this.sessions[id];
+      this.projects=settings.projects;
+      if(this.projectId===id){
+        this.selectionVersion++;
+        this.projectId=null;
+        if(settings.selected)await this.selectProject(settings.selected);
+      }
+    }catch(error){this.report(error);}
+  },
+  async refresh(id,network){
+    const s=this.sessions[id];
+    if(!s)return;
+    if (s.refreshing) {s.dirty=true; if(network)s.wantNetwork=true;return;}
+    s.refreshing=true;
+    let repository;
+    try{
+      repository=await invoke('repo_status',{projectId:id});
+      if (this.sessions[id]!==s) return;
+      s.repo=repository;
+      s.selected=s.selected.filter(old=>repository.files.some(f=>f.group===old.group&&f.path===old.path&&f.stamp===old.stamp));
+      s.error='';
+      for (const name of Object.keys(s.remotes)) if (!repository.remotes.includes(name)) delete s.remotes[name];
+      if (repository.kind==='folder') {
+        if (network&&this.projectId===id) {
+          this.projectsOpen=true;
+          s.childrenOpen=true;
+        }
+        if (!s.discovery) this.scanChildren(id);
+      } else {
+        s.discovery=null;
+      }
+      this.loadHeadFiles(id,repository.head);
+      this.updateGraph(id);
+    } catch(error){s.error=String(error);s.repo=null;s.discovery=null;}
+    finally{s.refreshing=false;}
+    if (repository?.kind==='git'&&network&&!s.refreshingRemote) {
+      s.refreshingRemote=true;
+      s.lastCloudCount=repository.remotes.every(name=>s.remotes[name]?.timestamp)
+        ? repository.remotes.reduce((count,name)=>count+s.remotes[name].refs.length,0)
+        : null;
+      const jobs=repository.remotes.map(async name=>{
+        s.remotes[name]={name,refs:[],...s.remotes[name],pending:true};
+        const stillConfigured=()=>this.sessions[id]===s&&s.repo?.remotes.includes(name);
+        const events=new Channel();
+        let finished=false;
+        events.onmessage=remote=>{
+          if (!finished&&stillConfigured()) {
+            s.remotes[name]=remote;
+            this.updateGraph(id);
+          }
+        };
+        try {
+          const remote=await invoke('remote_refresh',{projectId:id,name,events});
+          if (stillConfigured()) s.remotes[name]=remote;
+        } catch(error){
+          if (stillConfigured()) s.remotes[name]={...s.remotes[name],pending:false,error:String(error)};
+        } finally {finished=true;}
+      });
+      Promise.allSettled(jobs).then(()=>{s.refreshingRemote=false;this.updateGraph(id);});
+    }
+    if(s.dirty){const again=s.wantNetwork;s.dirty=false;s.wantNetwork=false;setTimeout(()=>this.refresh(id,!!again),140);}
+  },
+  async updateGraph(id){
+    const s=this.sessions[id], repo=s?.repo;
+    if(repo?.kind!=='git')return;
+    const pairs=branchPairs(s).filter(p=>p.local);
+    const targets=pairs.map(({local,remote})=>{
+      const upstream=local.remote==='.'?repo.local.find(b=>'refs/heads/'+b.name===local.merge)?.oid:remote?.available?remote.oid:null;
+      return [local.name,local.oid,upstream];
+    }).filter(row=>row[2]);
+    const comparisonKey=JSON.stringify(targets);
+    if(s.comparisonKey!==comparisonKey){
+      s.comparisonKey=comparisonKey;
+      s.counts={};
+      if(targets.length){
+        invoke('repo_compare',{projectId:id,pairs:targets.map(([,a,b])=>[a,b])}).then(counts=>{
+          if(s.comparisonKey===comparisonKey)s.counts=Object.fromEntries(targets.map(([name],i)=>[name,counts[i]]));
+        }).catch(error=>{if(this.projectId===id)this.report(error);});
+      }
+    }
+    const tips=Array.from(new Set([...repo.local.map(r=>r.oid),...Object.values(s.remotes).flatMap(r=>r.refs.filter(ref=>ref.available).map(ref=>ref.oid)),repo.head].filter(Boolean))).sort();
+    const key=tips.join('|');
+    if(s.historyKey===key)return;
+    s.historyKey=key;
+    s.graphBusy=true;
+    try {
+      const history=await invoke('repo_history',{projectId:id,tips});
+      if(s.historyKey!==key)return;
+      s.all=history;
+      s.revision++;
+      if(this.projectId===id){
+        if(s.focusSha&&history.some(c=>c.sha===s.focusSha))this.locate(s.focusSha);
+        else s.page=Math.min(s.page,Math.max(0,this.pageCount-1));
+      }
+    } catch(error){if(s.historyKey===key){s.historyKey=null;if(this.projectId===id)this.report(error);}}
+    finally{if(s.historyKey===key||s.historyKey===null)s.graphBusy=false;}
+  },
+  async loadHeadFiles(id,oid){
+    const s=this.sessions[id];
+    if (s.headFilesOid===oid&&!s.headFilesError) return;
+    s.headFilesOid=oid;
+    s.headFiles=null;
+    s.headFilesError=false;
+    s.headFilesOpen=false;
+    if (!oid) return;
+    const request=crypto.randomUUID();
+    s.headFilesRequest=request;
+    try{
+      const files=await invoke('repo_detail',{projectId:id,oid});
+      if (s.headFilesOid===oid&&s.headFilesRequest===request) s.headFiles=files;
+    }catch{
+      if (s.headFilesOid===oid&&s.headFilesRequest===request) s.headFilesError=true;
+    }
+  },
+  isSelected(file){return this.s.selected.some(f=>f.path===file.path&&f.group===file.group);},
+  toggleFile(file){this.s.selected=this.isSelected(file)?this.s.selected.filter(f=>f.path!==file.path||f.group!==file.group):this.s.selected.concat(file);},
+  scopeChanged(){this.s.page=0;this.s.focusSha=null;},
+  turnPage(amount){this.s.page=Math.max(0,Math.min(this.pageCount-1,this.s.page+amount));this.s.focusSha=null;},
+  locate(oid){
+    let index=this.history.findIndex(c=>c.sha===oid);
+    if(index<0&&this.s.scope!=='all'){this.s.scope='all';index=this.history.findIndex(c=>c.sha===oid);}
+    if(index<0){this.report('此提交暂未载入，请刷新后再定位。');return;}
+    this.s.page=Math.floor(index/PAGE_SIZE);
+    this.s.focusSha=oid;
+    this.s.focusSerial++;
+  },
+  async inspect(commit){
+    if(!commit)return;
+    const s=this.s,id=this.projectId;
+    this.locate(commit.sha);
+    s.commit=commit;s.view='commit';s.detail=null;
+    try{
+      const result=await invoke('repo_detail',{projectId:id,oid:commit.sha});
+      if(s.commit?.sha===commit.sha)s.detail=result;
+    }catch(error){if(s.commit?.sha===commit.sha)s.detail=[];this.report(error);}
+  },
+  branchView(branch,cloud){this.s.branch={...branch,cloud};this.s.view='branch';if(branch.available!==false)this.locate(branch.oid);},
+  async copyBranchOid(){
+    const oid=this.viewedBranch?.oid;
+    if (!oid) return;
+    try {await navigator.clipboard.writeText(oid);this.notice='已复制完整提交号。';}
+    catch(error){this.report(error);}
+  },
+  async viewPatch(file,oid){
+    const s=this.s,id=this.projectId;
+    const key=crypto.randomUUID();
+    s.diff={key,filename:file.path,label:oid?this.short(oid):groups.find(g=>g.id===file.group)?.label,lines:['正在读取…']};
+    s.view='diff';
+    try{
+      const patch=await invoke('repo_patch',{projectId:id,oid,path:file.path,group:file.group||''});
+      if(s.diff?.key===key)s.diff.lines=patch?patch.split('\n'):['没有可显示的文本差异。'];
+    }catch(error){if(s.diff?.key===key)s.diff.lines=[String(error)];}
+  },
+  openSearch(trigger){
+    if (!this.palette) {
+      searchTrigger=trigger||document.activeElement;
+      this.query='';
+      this.palette=true;
+      this.$refs.searchDialog.showModal();
+    }
+    this.$refs.search.focus();
+  },
+  closeSearch(restore=true){
+    this.$refs.searchDialog.close();
+    this.palette=false;
+    if (restore) {
+      const target=searchTrigger?.getClientRects().length&&searchTrigger!==document.body ? searchTrigger : this.$refs.launch;
+      target.focus({preventScroll:true});
+    }
+    searchTrigger=null;
+  },
+  choose(hit){
+    if(!hit)return;
+    this.closeSearch(false);
+    if(hit.project)this.selectProject(hit.project,false);
+    if(hit.commit)this.inspect(hit.commit);
+    if(hit.ref)this.branchView(hit.ref,hit.ref.kind==='remote');
+    this.$refs.editor.focus({preventScroll:true});
+  },
+  shortcut(event){
+    if((event.metaKey||event.ctrlKey)&&event.key.toLowerCase()==='p'){
+      event.preventDefault();
+      event.stopPropagation();
+      this.openSearch();
+    }
+    if(event.key==='Escape'&&this.palette){
+      event.preventDefault();
+      event.stopPropagation();
+      this.closeSearch();
+    }
+  },
+  openChat(){
+    if (!this.project||this.s.view==='chat') return;
+    const s=this.s;
+    const source=this.$refs.editor.querySelector('[data-view="'+s.view+'"]');
+    s.chatOrigin={view:s.view,scroll:source?.scrollTop||0,scope:s.scope,page:s.page,sha:s.focusSha,revision:s.revision};
+    s.chatCommit=s.view==='commit' ? s.commit?.sha : null;
+    s.chat=true;
+    s.view='chat';
+  },
+  toggleChat(){
+    const s=this.s;
+    if (s.view!=='chat') {this.openChat();return;}
+    const origin=s.chatOrigin;
+    s.chat=false;
+    s.chatCommit=null;
+    s.chatOrigin=null;
+    s.view=origin?.view||'status';
+    if (!origin) return;
+    s.scope=origin.scope==='all'||this.refs.some(ref=>ref.kind+'/'+ref.name===origin.scope) ? origin.scope : 'all';
+    s.page=Math.min(origin.page,Math.max(0,this.pageCount-1));
+    s.focusSha=origin.sha;
+    if (origin.sha&&origin.revision!==s.revision) this.locate(origin.sha);
+    this.$nextTick(()=>{
+      if (this.s!==s||s.view!==origin.view) return;
+      const source=this.$refs.editor.querySelector('[data-view="'+origin.view+'"]');
+      if (source) source.scrollTop=origin.scroll;
+    });
+  },
+  toggleTerminal(){if(!this.project)return;this.s.term=!this.s.term;this.$nextTick(()=>this.syncTerminal());},
+  openProjectTerminal(){this.s.term=true;this.$nextTick(()=>this.syncTerminal());},
+  syncTerminal(stealFocus=true){
+    const id=this.projectId;
+    showTerminal(id,this.s.term,this.$refs.terminals,error=>this.report(error),
+      ()=>stealFocus&&this.projectId===id&&!this.palette);
+  },
+  async closeTerminal(){this.s.term=false;try{await closeTerminal(this.projectId);}catch(error){this.report(error);}},
+  async configureClaude(){
+    const value=window.prompt('Claude Code 可执行路径。留空使用自动发现。',this.claudeExecutable||'');
+    if(value===null)return;
+    try{await invoke('claude_path',{path:value.trim()||null});this.claudeExecutable=value.trim()||null;}
+    catch(error){this.report(error);}
+  },
+  scrollChat(){this.$nextTick(()=>{const area=this.$refs.messages;if(area)area.scrollTop=area.scrollHeight;});},
+  async ask(question){
+    const text=question.trim(), id=this.projectId, s=this.s;
+    if(!text||!id||s.running)return;
+    const requestId=crypto.randomUUID(), events=new Channel();
+    s.draft='';s.running=requestId;
+    s.messages.push({id:requestId+':user',who:'你',text},{id:requestId+':assistant',who:'Claude',text:''});
+    const answer=s.messages.at(-1);
+    events.onmessage=event=>{
+      if(event.kind==='delta')answer.text+=event.text;
+      if(event.kind==='commit'){
+        answer.who='Git';
+        answer.text='已提交 '+this.short(event.oid)+' · '+event.message;
+        this.refresh(id,false);
+      }
+      if(this.projectId===id)this.scrollChat();
+    };
+    try {await invoke('agent_send',{projectId:id,requestId,question:text,selected:s.selected,commitOid:s.chatCommit,events});}
+    catch(error){answer.text+= (answer.text?'\n':'')+String(error);}
+    finally{s.running=null;if(this.projectId===id)this.scrollChat();}
+  },
+  async cancel(){if(this.s.running)try{await invoke('agent_cancel',{projectId:this.projectId,requestId:this.s.running});}catch(error){this.report(error);}}
+}));
+
+document.querySelector('#app').innerHTML=template;
+document.querySelector('#app').setAttribute('@keydown.window.capture','shortcut($event)');
+Alpine.start();

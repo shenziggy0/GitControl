@@ -1,0 +1,16 @@
+{
+  "productName": "GitControl",
+  "version": "0.1.0",
+  "identifier": "com.ziggy.gitcontrol",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "devUrl": "http://127.0.0.1:1420",
+    "beforeBuildCommand": "npm run build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [{"label":"main","title":"GitControl","width":1440,"height":880,"minWidth":860,"minHeight":580}],
+    "security": {"csp":"default-src 'self'; script-src 'self' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src ipc: http://ipc.localhost"}
+  },
+  "bundle": {"active":true,"targets":["app","dmg"],"icon":["icons/icon.icns"],"macOS":{"minimumSystemVersion":"13.0","signingIdentity":"-"}}
+}

@@ -1,0 +1,12 @@
+GitControl · macOS 安装说明
+
+需要 macOS 13 或更高版本。在苹果菜单的“关于本机”中查看芯片。
+Apple M 系列使用 aarch64 安装包，Intel 处理器使用 x64 安装包。
+
+1. 将 GitControl.app 拖到旁边的 Applications 文件夹。
+2. 推出磁盘镜像，从“应用程序”打开 GitControl。
+3. 如果 macOS 提示无法验证开发者，请先确认下载来源可信，再到
+   “系统设置 → 隐私与安全性”，找到 GitControl 并选择“仍要打开”。
+   此版本使用本地临时签名，未经过 Apple 公证。
+4. 点击资源管理器中的 ＋，选择本机 Git 仓库。
+   需要先安装 Git。要使用 Claude 对话，请先在本机登录 Claude Code。
