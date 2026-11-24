@@ -57,11 +57,12 @@ function branchPairs(s) {
 Alpine.data('workspace',()=>({
   projects:[], sessions:{}, projectId:null, empty:session(), sidebar:true, projectsOpen:true,
   branchesOpen:true, remotesOpen:false, tagsOpen:false, palette:false, query:'', notice:'',
-  pane:'editor', appearance:'system', searchIndex:0, loadingProjects:isTauri(), claudeExecutable:null,
+  pane:'editor', appearance:'system', selectedSearchKey:null, loadingProjects:isTauri(), claudeExecutable:null,
   pathDraft:'', pathError:'', savingPath:false,
   selectionVersion:0, openingChild:false,
   get project(){return this.projects.find(p=>p.id===this.projectId)},
   get s(){return this.sessions[this.projectId]||this.empty},
+  get visiblePane(){return compactLayout.matches ? this.pane : 'editor';},
   get active(){return this.s.repo?.kind==='git'&&!this.s.error},
   get discoveryText(){
     const scan=this.s.discovery;
@@ -174,7 +175,19 @@ Alpine.data('workspace',()=>({
     }
     return hits;
   },
+  get selectedSearchHit(){
+    const hits=this.matches;
+    return hits.find(hit=>hit.key===this.selectedSearchKey)??hits[0];
+  },
   async init(){
+    this.$watch(()=>({query:this.query,keys:this.matches.map(hit=>hit.key)}),({query,keys},previous)=>{
+      const selected=this.selectedSearchKey;
+      if (query===previous.query && keys.includes(selected)) return;
+      const index=query===previous.query
+        ? Math.min(Math.max(previous.keys.indexOf(selected),0),keys.length-1)
+        : 0;
+      this.selectedSearchKey=keys[index]??null;
+    });
     try {
       const saved=localStorage.getItem(appearanceKey);
       if (['system','light','dark'].includes(saved)) this.appearance=saved;
@@ -206,9 +219,18 @@ Alpine.data('workspace',()=>({
     updateTerminalAppearance();
   },
   goPane(pane){
+    const editorWasVisible=this.visiblePane==='editor';
+    if (editorWasVisible && pane!=='editor') this.rememberEditorScroll();
     this.pane=pane;
-    if (pane==='editor' && compactLayout.matches) this.$nextTick(()=>{
-      if (this.pane==='editor' && !this.palette && !this.$refs.settingsDialog.open) this.$refs.editor.focus({preventScroll:true});
+    if (pane!=='editor' || !compactLayout.matches) return;
+    const s=this.s, view=s.view, detail=this.detailView;
+    this.$nextTick(()=>{
+      if (this.s!==s || this.pane!=='editor' || this.palette || this.$refs.settingsDialog.open) return;
+      if (!editorWasVisible && s.view===view && this.detailView===detail) {
+        const buffer=this.editorBuffer(view);
+        if (buffer) buffer.scrollTop=view==='status' ? s.statusScroll : detail?.scroll??0;
+      }
+      this.$refs.editor.focus({preventScroll:true});
     });
   },
   report(error){this.notice=String(error);},
@@ -422,12 +444,58 @@ Alpine.data('workspace',()=>({
     this.s.focusSerial++;
     if (reveal) {
       this.goPane('history');
+      const s=this.s;
       this.$nextTick(()=>{
-        const row=document.querySelector('.graph-row[aria-pressed="true"]');
-        row?.scrollIntoView({block:'nearest'});
-        row?.focus({preventScroll:true});
+        if (this.s===s && this.pane==='history' && s.focusSha===oid) this.focusHistory(oid);
       });
     }
+  },
+  focusHistory(sha){
+    const row=sha ? this.$refs.historyList.querySelector('[data-sha="'+CSS.escape(sha)+'"]') : null;
+    row?.scrollIntoView({block:'nearest'});
+    const scope=this.$refs.historyScope;
+    (row||(scope.getClientRects().length ? scope : this.$refs.historyTab)).focus({preventScroll:true});
+  },
+  paneOrigin(pane,anchor){
+    const s=this.s;
+    if (pane==='history') {
+      return {pane,scope:s.scope,page:s.page,sha:anchor||s.focusSha,scroll:this.$refs.historyList.scrollTop,revision:s.revision};
+    }
+    if (pane==='sidebar') return {pane,branchKey:anchor};
+    return {pane:'editor',scope:s.scope,page:s.page,sha:s.focusSha,revision:s.revision};
+  },
+  restorePane(origin){
+    const s=this.s;
+    const {pane}=origin;
+    if (pane==='sidebar') this.sidebar=true;
+    this.goPane(pane);
+    let sha=null;
+    if (origin.scope!=null) {
+      s.scope=origin.scope==='all'||this.refs.some(ref=>ref.kind+'/'+ref.name===origin.scope)
+        ? origin.scope : 'all';
+      const index=origin.sha ? this.history.findIndex(commit=>commit.sha===origin.sha) : -1;
+      s.page=index>=0 ? Math.floor(index/PAGE_SIZE) : Math.min(origin.page,Math.max(0,this.pageCount-1));
+      s.focusSha=sha=index>=0 ? origin.sha : null;
+    }
+    this.$nextTick(()=>{
+      if (this.s!==s || this.pane!==pane || this.palette || this.$refs.settingsDialog.open) return;
+      if (pane==='history') {
+        if (origin.revision===s.revision && s.scope===origin.scope && s.page===origin.page) {
+          this.$refs.historyList.scrollTop=origin.scroll;
+        }
+        this.focusHistory(sha);
+      } else if (pane==='sidebar') {
+        const sidebar=this.$refs.projectSidebar;
+        const branch=origin.branchKey
+          ? sidebar.querySelector('[data-branch-key="'+CSS.escape(origin.branchKey)+'"]') : null;
+        const project=sidebar.querySelector('.project.tree[aria-current="page"]');
+        const target=[branch,project,this.$refs.addProject].find(control=>control?.getClientRects().length);
+        target.scrollIntoView({block:'nearest'});
+        target.focus({preventScroll:true});
+      } else {
+        this.$refs.editor.focus({preventScroll:true});
+      }
+    });
   },
   editorBuffer(view){
     return this.$refs.editor.querySelector('[data-view="'+view+'"]');
@@ -435,15 +503,16 @@ Alpine.data('workspace',()=>({
   rememberEditorScroll(){
     const s = this.s;
     const buffer = this.editorBuffer(s.view);
-    if (!buffer) return;
+    if (!buffer?.getClientRects().length) return;
     if (s.view === 'status') s.statusScroll = buffer.scrollTop;
     else if (this.detailOpen) this.detailView.scroll = buffer.scrollTop;
   },
   showEditorView(view, scroll, direction=1){
     const s = this.s;
+    const detail=this.detailView;
     s.view = view;
     this.$nextTick(() => {
-      if (this.s !== s || s.view !== view) return;
+      if (this.s!==s || s.view!==view || this.detailView!==detail || this.visiblePane!=='editor') return;
       const buffer = this.editorBuffer(view);
       if (!buffer) return;
       buffer.scrollTop = scroll;
@@ -464,37 +533,47 @@ Alpine.data('workspace',()=>({
     this.rememberEditorScroll();
     this.showEditorView(this.detailView.view, this.detailView.scroll);
   },
-  openDetail(detail){
-    this.goPane('editor');
+  openDetail(detail,origin){
     const s = this.s;
-    if (this.detailOpen && this.detailView.key === detail.key) return null;
-    this.rememberEditorScroll();
+    const previousView=s.view;
+    if (this.visiblePane==='editor') this.rememberEditorScroll();
+    origin??=this.paneOrigin(this.visiblePane);
+    this.goPane('editor');
+    if (this.detailOpen && this.detailView.key === detail.key) {
+      if (origin.pane!=='editor') this.detailView.origin=origin;
+      return null;
+    }
     if (s.view === 'status') s.detailTrail = [];
-    s.detailTrail.push({ ...detail, scroll: 0 });
+    s.detailTrail.push({ ...detail, scroll: 0, origin, previousView });
     this.showEditorView(detail.view, 0);
     return this.detailView;
   },
   backFromDetail(){
-    this.s.detailTrail.pop();
+    const s=this.s;
+    const closed=s.detailTrail.pop();
+    if (!closed) return;
     const detail = this.detailView;
-    if (detail) {
-      this.showEditorView(detail.view, detail.scroll,-1);
-      const oid = detail.commit?.sha ?? detail.branch?.oid;
-      if (oid && this.s.all.some(commit => commit.sha === oid)) this.locate(oid);
+    const view=closed.previousView==='chat' || closed.previousView===detail?.view
+      ? closed.previousView : 'status';
+    this.showEditorView(view,view==='status' ? s.statusScroll : detail?.scroll??0,-1);
+    if (closed.origin.pane!=='editor') {
+      this.restorePane(closed.origin);
     } else {
-      this.showEditorView('status', this.s.statusScroll,-1);
+      const oid = detail.commit?.sha ?? detail.branch?.oid;
+      if (this.detailOpen && oid && s.all.some(commit=>commit.sha===oid)) this.locate(oid);
+      this.$refs.editor.focus({preventScroll:true});
     }
-    this.$refs.editor.focus({preventScroll:true});
   },
   closeDetail(){
     this.s.detailTrail = [];
+    this.goPane('editor');
     this.showEditorView('status', this.s.statusScroll,-1);
     this.$refs.editor.focus({preventScroll:true});
   },
-  async inspect(commit){
+  async inspect(commit,origin){
     if (!commit) return;
     const id = this.projectId;
-    const detail = this.openDetail({view:'commit', key:'commit/'+commit.sha, title:this.short(commit.sha), commit, files:null, error:''});
+    const detail = this.openDetail({view:'commit', key:'commit/'+commit.sha, title:this.short(commit.sha), commit, files:null, error:''},origin);
     this.locate(commit.sha);
     if (!detail) return;
     try {
@@ -504,9 +583,9 @@ Alpine.data('workspace',()=>({
       detail.error = String(error);
     }
   },
-  branchView(branch,cloud){
+  branchView(branch,cloud,origin){
     const key = (cloud ? 'remote/' : 'local/') + branch.name;
-    this.openDetail({view:'branch', key, title:branch.name, branch:{...branch,cloud}});
+    this.openDetail({view:'branch', key, title:branch.name, branch:{...branch,cloud}},origin);
     if (branch.available !== false) this.locate(branch.oid);
   },
   async copyBranchOid(){
@@ -530,12 +609,13 @@ Alpine.data('workspace',()=>({
   },
   openSearch(trigger){
     if (this.$refs.settingsDialog.open) return;
+    searchExit?.effect?.target?.remove();
     searchExit?.cancel();
     searchExit=null;
     if (!this.palette) {
       searchTrigger=trigger||document.activeElement;
       this.query='';
-      this.searchIndex=0;
+      this.selectedSearchKey=null;
       this.palette=true;
       const anchor=(trigger||this.$refs.launch).getBoundingClientRect();
       const dialog=this.$refs.searchDialog;
@@ -546,44 +626,65 @@ Alpine.data('workspace',()=>({
     this.$refs.search.focus();
   },
   moveSearch(amount){
-    const count=this.matches.length;
-    if (!count) return;
-    this.searchIndex=(this.searchIndex+amount+count)%count;
-    document.getElementById('search-hit-'+this.searchIndex)?.scrollIntoView({block:'nearest'});
+    const hits=this.matches;
+    if (!hits.length) return;
+    const current=Math.max(0,hits.findIndex(hit=>hit.key===this.selectedSearchKey));
+    const next=hits[(current+amount+hits.length)%hits.length];
+    this.selectedSearchKey=next.key;
+    document.getElementById(this.searchOptionId(next.key))?.scrollIntoView({block:'nearest'});
   },
+  searchOptionId(key){return 'search-hit-'+encodeURIComponent(key);},
   searchKey(event){
     if (event.isComposing || event.keyCode===229) return;
     if (!['ArrowDown','ArrowUp','Enter'].includes(event.key)) return;
     event.preventDefault();
-    if (event.key==='Enter') this.choose(this.matches[this.searchIndex]);
+    if (event.key==='Enter') this.choose(this.selectedSearchHit?.key);
     else this.moveSearch(event.key==='ArrowDown'?1:-1);
   },
   closeSearch(restore=true){
     if (!this.palette) return;
     const dialog=this.$refs.searchDialog;
-    if (restore && !reducedMotion.matches && !searchExit) {
-      const exit=dialog.firstElementChild.animate([{opacity:1,transform:'none'},{opacity:0,transform:'translateY(-5px) scale(.985)'}],{duration:115,easing:'ease-in'});
-      searchExit=exit;
-      exit.finished.then(()=>{if (searchExit===exit) this.dismissSearch(restore);},()=>{});
-    } else if (!restore || !searchExit) this.dismissSearch(restore);
-  },
-  dismissSearch(restore){
-    searchExit?.cancel();
-    searchExit=null;
-    this.$refs.searchDialog.close();
+    const bounds=restore && !reducedMotion.matches ? dialog.firstElementChild.getBoundingClientRect() : null;
+    const trigger=searchTrigger;
+    searchTrigger=null;
     this.palette=false;
+    dialog.close();
     if (restore) {
-      const target=searchTrigger?.getClientRects().length&&searchTrigger!==document.body ? searchTrigger : this.$refs.launch;
+      const target=trigger?.getClientRects().length&&trigger!==document.body&&!trigger.disabled ? trigger : this.$refs.launch;
       target.focus({preventScroll:true});
     }
-    searchTrigger=null;
+    if (!bounds || this.palette) return;
+    const sheet=document.createElement('div');
+    sheet.className='picker glass search-exit';
+    sheet.setAttribute('aria-hidden','true');
+    sheet.inert=true;
+    Object.assign(sheet.style,{
+      top:bounds.top+'px',left:bounds.left+'px',width:bounds.width+'px',height:bounds.height+'px'
+    });
+    dialog.after(sheet);
+    const exit=sheet.animate([{opacity:1},{opacity:0,transform:'translateY(-5px) scale(.985)'}],{duration:115,easing:'ease-in'});
+    searchExit=exit;
+    const cleanup=()=>{
+      sheet.remove();
+      if (searchExit===exit) searchExit=null;
+    };
+    exit.finished.then(cleanup,cleanup);
   },
-  choose(hit){
-    if(!hit)return;
+  choose(key){
+    const hit=key&&this.matches.find(item=>item.key===key);
+    if (!hit) return;
+    const trigger=searchTrigger;
+    let pane=this.visiblePane;
+    if (!compactLayout.matches) {
+      if (trigger?.closest('.history')) pane='history';
+      else if (trigger?.closest('#project-sidebar')) pane='sidebar';
+    }
+    const anchor=pane==='history' ? trigger?.closest('.graph-row')?.dataset.sha : trigger?.dataset.branchKey;
+    const origin=this.paneOrigin(pane,anchor);
     this.closeSearch(false);
     if(hit.project)this.selectProject(hit.project,false);
-    if(hit.commit)this.inspect(hit.commit);
-    if(hit.ref)this.branchView(hit.ref,hit.ref.kind==='remote');
+    if(hit.commit)this.inspect(hit.commit,origin);
+    if(hit.ref)this.branchView(hit.ref,hit.ref.kind==='remote',origin);
     this.$refs.editor.focus({preventScroll:true});
   },
   shortcut(event){
@@ -600,34 +701,29 @@ Alpine.data('workspace',()=>({
     }
   },
   openChat(){
-    this.goPane('editor');
-    if (!this.project||this.s.view==='chat') return;
+    if (!this.project) return;
     const s=this.s;
-    const source=this.editorBuffer(s.view);
-    s.chatOrigin={view:s.view,scroll:source?.scrollTop||0,scope:s.scope,page:s.page,sha:s.focusSha,revision:s.revision};
-    s.chatCommit=s.view==='commit' ? this.detailView?.commit?.sha : null;
+    const pane=this.visiblePane;
+    if (pane==='editor' && s.view==='chat') return;
+    if (pane==='editor') this.rememberEditorScroll();
+    const view=s.view==='chat' ? s.chatOrigin?.view??'status' : s.view;
+    s.chatOrigin={...this.paneOrigin(pane), view};
+    s.chatCommit=pane==='editor' && s.view==='commit' && this.detailOpen
+      ? this.detailView.commit.sha : null;
+    this.goPane('editor');
     s.chat=true;
     s.view='chat';
   },
   toggleChat(){
     const s=this.s;
-    if (compactLayout.matches && this.pane!=='editor' && s.view==='chat') {this.goPane('editor');return;}
-    if (s.view!=='chat') {this.openChat();return;}
+    if (this.visiblePane!=='editor' || s.view!=='chat') {this.openChat();return;}
     const origin=s.chatOrigin;
     s.chat=false;
     s.chatCommit=null;
     s.chatOrigin=null;
-    s.view=origin?.view||'status';
-    if (!origin) return;
-    s.scope=origin.scope==='all'||this.refs.some(ref=>ref.kind+'/'+ref.name===origin.scope) ? origin.scope : 'all';
-    s.page=Math.min(origin.page,Math.max(0,this.pageCount-1));
-    s.focusSha=origin.sha;
-    if (origin.sha&&origin.revision!==s.revision) this.locate(origin.sha);
-    this.$nextTick(()=>{
-      if (this.s!==s||s.view!==origin.view) return;
-      const source=this.editorBuffer(origin.view);
-      if (source) source.scrollTop=origin.scroll;
-    });
+    const view=origin?.view||'status';
+    this.showEditorView(view,view==='status' ? s.statusScroll : this.detailView?.scroll??0,-1);
+    if (origin) this.restorePane(origin);
   },
   toggleTerminal(){
     if(!this.project)return;

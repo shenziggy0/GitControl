@@ -111,7 +111,7 @@ export function mountGraph(state, Alpine, pageSize) {
         const tag=state.graphTags.get(commit.sha);
         if(tag){const label=document.createElement('span');label.className='ref';label.textContent=tag;heading.append(label)}
       }
-      button.onclick=()=>state.inspect(commit);
+      button.onclick=()=>state.inspect(commit,state.paneOrigin('history',commit.sha));
       body.append(button);y+=h;
     }
     svg.append(...nodes);

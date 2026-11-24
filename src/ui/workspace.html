@@ -11,8 +11,8 @@
   </div>
 </header>
 <div class="shell" :class="{'noside':!sidebar}" :data-pane="pane">
-  <aside class="sidebar glass" id="project-sidebar" aria-label="资源管理器">
-    <header class="sidehead"><h2>资源管理器</h2><button class="icon-button add-project" aria-label="添加项目" title="添加项目" @click="addProject()"><i data-lucide="plus"></i></button></header>
+  <aside class="sidebar glass" id="project-sidebar" x-ref="projectSidebar" aria-label="资源管理器">
+    <header class="sidehead"><h2>资源管理器</h2><button class="icon-button add-project" x-ref="addProject" aria-label="添加项目" title="添加项目" @click="addProject()"><i data-lucide="plus"></i></button></header>
     <div class="side-scroll">
     <button class="side-link" :aria-current="s.view==='status'?'page':false" @click="goPane('editor'); showStatus()"><i data-lucide="layout-dashboard"></i>工作台</button>
     <button class="side-link" @click="openSearch($el)"><i data-lucide="search"></i>快速打开<kbd>⌘ P</kbd></button>
@@ -41,13 +41,13 @@
       <p class="side-empty" x-show="!projects.length">尚未添加项目</p>
     </div>
     <div x-show="active"><button class="group" @click="branchesOpen=!branchesOpen" :aria-expanded="branchesOpen">本地分支 <small x-text="s.repo?.local.length"></small><i data-lucide="chevron-right"></i></button>
-    <div x-show="branchesOpen"><template x-for="b in s.repo?.local||[]" :key="b.name"><button class="tree branch" :title="b.name" :aria-current="s.view==='branch'&&!detailView?.branch?.cloud&&detailView?.branch?.name===b.name?'page':false" @click="branchView(b,false)"><i data-lucide="git-branch"></i><span x-text="b.name"></span><em class="head-label" x-show="b.name===s.repo?.branch">HEAD</em></button></template></div>
+    <div x-show="branchesOpen"><template x-for="b in s.repo?.local||[]" :key="b.name"><button class="tree branch" :data-branch-key="'local/'+b.name" :title="b.name" :aria-current="s.view==='branch'&&!detailView?.branch?.cloud&&detailView?.branch?.name===b.name?'page':false" @click="branchView(b,false,paneOrigin('sidebar',$el.dataset.branchKey))"><i data-lucide="git-branch"></i><span x-text="b.name"></span><em class="head-label" x-show="b.name===s.repo?.branch">HEAD</em></button></template></div>
     <button class="group" @click="remotesOpen=!remotesOpen" :aria-expanded="remotesOpen">云端分支 <small aria-live="polite" x-text="cloudCountText"></small><i data-lucide="chevron-right"></i></button>
     <div x-show="remotesOpen">
       <template x-for="remote in remoteChecks" :key="remote.name">
         <div>
           <div class="remote-proof sidebar-remote" :title="remoteText(remote)" x-text="remoteText(remote)"></div>
-          <template x-for="r in remote.refs" :key="r.name"><button class="tree branch" :title="r.name" :aria-current="s.view==='branch'&&detailView?.branch?.cloud&&detailView?.branch?.name===r.name?'page':false" @click="branchView(r,true)"><i data-lucide="cloud"></i><span x-text="r.name"></span></button></template>
+          <template x-for="r in remote.refs" :key="r.name"><button class="tree branch" :data-branch-key="'remote/'+r.name" :title="r.name" :aria-current="s.view==='branch'&&detailView?.branch?.cloud&&detailView?.branch?.name===r.name?'page':false" @click="branchView(r,true,paneOrigin('sidebar',$el.dataset.branchKey))"><i data-lucide="cloud"></i><span x-text="r.name"></span></button></template>
         </div>
       </template>
     </div>
@@ -206,11 +206,11 @@
     </section>
   </main>
   <section class="history" aria-label="提交图"><header class="historyhead"><span class="feature-icon violet"><i data-lucide="git-graph"></i></span><h2>提交图</h2><span class="count" x-show="active" x-text="history.length+' 条'"></span></header>
-    <div class="graphscope" x-show="active"><label class="scope-control"><i data-lucide="list-filter"></i><select aria-label="提交图分支范围" x-model="s.scope" @change="scopeChanged()">
+    <div class="graphscope" x-show="active"><label class="scope-control"><i data-lucide="list-filter"></i><select x-ref="historyScope" aria-label="提交图分支范围" x-model="s.scope" @change="scopeChanged()">
       <option value="all">所有分支</option><optgroup label="本地"><template x-for="ref in s.repo?.local||[]" :key="ref.name"><option :value="'local/'+ref.name" x-text="ref.name"></option></template></optgroup>
       <optgroup label="云端"><template x-for="ref in cloud" :key="ref.name"><option :value="'remote/'+ref.name" x-text="ref.name"></option></template></optgroup></select></label>
       <div class="legend"><span><i data-lucide="git-branch"></i>本地</span><span><i data-lucide="cloud"></i>云端</span></div></div>
-    <div class="historyscroll" id="history-list" x-show="active&&history.length"></div>
+    <div class="historyscroll" id="history-list" x-ref="historyList" x-show="active&&history.length"></div>
     <div class="emptyhistory" role="status" x-show="!active||!history.length"><i data-lucide="git-graph"></i><p x-text="s.repo?.kind==='folder'?'选择子仓库后查看提交图':active&&s.graphBusy?'正在读取提交历史…':active?'当前范围内没有提交':'打开仓库后查看提交图'"></p></div>
     <nav class="paging" x-show="active&&pageCount" aria-label="提交图翻页"><button @click="turnPage(-1)" :disabled="s.page===0" aria-label="上一页"><i data-lucide="chevron-left"></i></button><span x-text="pageRange"></span><button @click="turnPage(1)" :disabled="s.page+1>=pageCount" aria-label="下一页"><i data-lucide="chevron-right"></i></button></nav>
   </section>
@@ -219,7 +219,7 @@
   <span class="segment-lens" aria-hidden="true"></span>
   <button @click="goPane('sidebar')" :aria-pressed="pane==='sidebar'"><i data-lucide="panel-left"></i>资源库</button>
   <button @click="goPane('editor')" :aria-pressed="pane==='editor'"><i data-lucide="layout-dashboard"></i>工作台</button>
-  <button @click="goPane('history')" :aria-pressed="pane==='history'"><i data-lucide="git-graph"></i>提交图</button>
+  <button x-ref="historyTab" @click="goPane('history')" :aria-pressed="pane==='history'"><i data-lucide="git-graph"></i>提交图</button>
 </nav>
 <footer class="statusbar">
   <span><i data-lucide="monitor"></i>本机</span><span class="status-path" :title="project?.path" x-text="project?.path"></span><span class="grow"></span>
@@ -232,11 +232,11 @@
   <section class="picker glass">
     <div class="picker-field"><i data-lucide="search"></i>
       <input autofocus x-ref="search" x-model="query" role="combobox" aria-autocomplete="list" aria-expanded="true" aria-controls="search-options"
-        :aria-activedescendant="matches[searchIndex]?'search-hit-'+searchIndex:null" @input="searchIndex=0" @keydown="searchKey($event)" placeholder="搜索项目、分支或提交…" aria-label="搜索项目、分支或提交">
+        :aria-activedescendant="selectedSearchHit?searchOptionId(selectedSearchHit.key):null" @input="selectedSearchKey=null" @keydown="searchKey($event)" placeholder="搜索项目、分支或提交…" aria-label="搜索项目、分支或提交">
       <button class="escape" @click="closeSearch()" aria-label="关闭搜索">Esc</button>
     </div>
     <div class="options" role="listbox" aria-label="搜索结果" id="search-options">
-      <template x-for="(m,i) in matches" :key="m.key"><button type="button" role="option" tabindex="-1" :id="'search-hit-'+i" :aria-selected="searchIndex===i" @click="choose(m)"><small x-text="m.kind"></small><span x-text="m.label"></span><i data-lucide="corner-down-left"></i></button></template>
+      <template x-for="m in matches" :key="m.key"><button type="button" role="option" tabindex="-1" :id="searchOptionId(m.key)" :aria-selected="selectedSearchKey===m.key" @click="choose(m.key)"><small x-text="m.kind"></small><span x-text="m.label"></span><i data-lucide="corner-down-left"></i></button></template>
     </div>
     <p class="no-results" role="status" x-show="!matches.length" x-text="query?'没有匹配结果':'添加项目后，可以在这里搜索项目、分支和提交。'"></p>
   </section>
