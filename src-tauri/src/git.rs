@@ -148,6 +148,12 @@ pub struct Branch {
     pub merge: String,
 }
 #[derive(Clone, Deserialize, Serialize)]
+pub struct Tag {
+    pub name: String,
+    // The graph uses commit IDs. Tags on trees and blobs have no graph row.
+    pub oid: Option<String>,
+}
+#[derive(Clone, Deserialize, Serialize)]
 pub struct Status {
     pub kind: String,
     pub branch: Option<String>,
@@ -155,7 +161,7 @@ pub struct Status {
     pub files: Vec<Change>,
     pub local: Vec<Branch>,
     pub tracking: Vec<Branch>,
-    pub tags: Vec<Branch>,
+    pub tags: Vec<Tag>,
     pub remotes: Vec<String>,
 }
 
@@ -184,8 +190,7 @@ fn parse_branches(text: &str) -> Vec<Branch> {
             }
             let name = cols[0]
                 .strip_prefix("refs/heads/")
-                .or_else(|| cols[0].strip_prefix("refs/remotes/"))
-                .or_else(|| cols[0].strip_prefix("refs/tags/"))?;
+                .or_else(|| cols[0].strip_prefix("refs/remotes/"))?;
             if !cols[5].is_empty() {
                 return None;
             }
@@ -199,6 +204,39 @@ fn parse_branches(text: &str) -> Vec<Branch> {
         })
         .collect()
 }
+fn read_tags(project: &Project) -> Result<Vec<Tag>, String> {
+    let format = "--format=%(refname:strip=2)%00%(objecttype)%00%(objectname)%00%(*objecttype)%00%(*objectname)";
+    let refs = read(project, &["for-each-ref", format, "refs/tags"])?;
+    let mut tags = Vec::new();
+    for line in refs.lines() {
+        let fields: Vec<_> = line.split('\0').collect();
+        let [name, kind, oid, target_kind, target_oid] = fields[..] else {
+            return Err("无法读取 Git 标签。".into());
+        };
+        let commit = match (kind, target_kind) {
+            ("commit", _) => Some(oid.to_owned()),
+            ("tag", "commit") => Some(target_oid.to_owned()),
+            // for-each-ref dereferences one layer; a tag can point to another tag.
+            ("tag", "tag") => read(
+                project,
+                &[
+                    "rev-parse",
+                    "--verify",
+                    "--quiet",
+                    &format!("{oid}^{{commit}}"),
+                ],
+            )
+            .ok(),
+            _ => None,
+        };
+        tags.push(Tag {
+            name: name.to_owned(),
+            oid: commit,
+        });
+    }
+    Ok(tags)
+}
+
 pub fn status(project: &Project) -> Result<Status, String> {
     if !project.path.is_dir() {
         return Err("项目目录已移动或不可访问。".into());
@@ -305,7 +343,7 @@ pub fn status(project: &Project) -> Result<Status, String> {
     let format="--format=%(refname)%00%(objectname)%00%(upstream:remotename)%00%(upstream:remoteref)%00%(upstream:short)%00%(symref)";
     status.local = parse_branches(&read(project, &["for-each-ref", format, "refs/heads"])?);
     status.tracking = parse_branches(&read(project, &["for-each-ref", format, "refs/remotes"])?);
-    status.tags = parse_branches(&read(project, &["for-each-ref", format, "refs/tags"])?);
+    status.tags = read_tags(project)?;
     status.remotes = read(project, &["remote"])?
         .lines()
         .map(str::to_owned)

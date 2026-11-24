@@ -122,7 +122,6 @@ Alpine.data('workspace',()=>({
     Object.values(this.s.remotes).some(r=>r.timestamp&&!r.error&&ref.name.startsWith(r.name+'/')&&!r.refs.some(x=>x.name===ref.name)))},
   get changeGroups(){return groups.map(group=>({...group,files:(this.s.repo?.files||[]).filter(f=>f.group===group.id)}))},
   get fileCount(){return new Set((this.s.repo?.files||[]).map(f=>f.path)).size},
-  get graphTags(){return new Map((this.s.repo?.tags||[]).map(x=>[x.oid,x.name]))},
   get headCommit(){return this.s.all.find(c=>c.sha===this.s.repo?.head)},
   get detailView(){return this.s.detailTrail.at(-1);},
   get detailOpen(){return this.detailView?.view===this.s.view;},
@@ -397,7 +396,10 @@ Alpine.data('workspace',()=>({
         }).catch(error=>{if(this.projectId===id)this.report(error);});
       }
     }
-    const tips=Array.from(new Set([...repo.local.map(r=>r.oid),...Object.values(s.remotes).flatMap(r=>r.refs.filter(ref=>ref.available).map(ref=>ref.oid)),repo.head].filter(Boolean))).sort();
+    const tips=Array.from(new Set([
+      repo.head, ...repo.local.map(ref=>ref.oid), ...repo.tags.map(tag=>tag.oid),
+      ...Object.values(s.remotes).flatMap(remote=>remote.refs.filter(ref=>ref.available).map(ref=>ref.oid))
+    ].filter(Boolean))).sort();
     const key=tips.join('|');
     if(s.historyKey===key)return;
     s.historyKey=key;

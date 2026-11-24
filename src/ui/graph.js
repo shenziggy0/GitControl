@@ -1,4 +1,4 @@
-import { Cloud, createElement, GitBranch } from 'lucide';
+import { Cloud, createElement, GitBranch, Tag } from 'lucide';
 
 // Each lane names the next ancestor reached by a line. An unmerged tip
 // starts a new lane; it has no incoming edge from the preceding commit.
@@ -39,10 +39,10 @@ function refBadge(ref) {
   const badge=document.createElement('span');
   badge.className='pointer '+ref.kind;
   badge.dataset.name=ref.name;
-  const origin=ref.kind==='local'?'本地':'云端';
+  const [origin,icon]={local:['本地',GitBranch],remote:['云端',Cloud],tag:['标签',Tag]}[ref.kind];
   badge.title=origin+' '+ref.name+' · '+ref.oid;
   badge.setAttribute('aria-label',badge.title);
-  const svg=createElement(ref.kind==='local'?GitBranch:Cloud,{class:'lucide','aria-hidden':'true'});
+  const svg=createElement(icon,{class:'lucide','aria-hidden':'true'});
   const label=document.createElement('span');
   label.textContent=ref.name;
   badge.append(svg,label);
@@ -107,9 +107,6 @@ export function mountGraph(state, Alpine, pageSize) {
         const labels=document.createElement('span');labels.className='row-pointers';
         for (const ref of refsBySha.get(commit.sha)) labels.append(refBadge(ref));
         button.append(labels);
-      } else {
-        const tag=state.graphTags.get(commit.sha);
-        if(tag){const label=document.createElement('span');label.className='ref';label.textContent=tag;heading.append(label)}
       }
       button.onclick=()=>state.inspect(commit,state.paneOrigin('history',commit.sha));
       body.append(button);y+=h;
@@ -125,8 +122,9 @@ export function mountGraph(state, Alpine, pageSize) {
       rows = historyLayout(state.history,state.s.repo?.head);
       layoutKey = layout;
     }
-    const refs = state.refs;
-    const key = [layout,state.s.page,state.s.repo?.head,refs.map(r=>r.kind+':'+r.name+':'+r.oid).join(',')].join('|');
+    const tags = (state.s.repo?.tags||[]).filter(tag=>tag.oid).map(tag=>({...tag,kind:'tag'}));
+    const refs = [...state.refs,...tags];
+    const key = [layout,state.s.page,JSON.stringify(refs.map(r=>[r.kind,r.name,r.oid]))].join('|');
     if(key!==renderedPage){
       const previous = list.scrollTop;
       const samePage = renderedPage.startsWith([layout,state.s.page].join('|')+'|');

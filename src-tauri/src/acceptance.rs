@@ -101,6 +101,31 @@ fn separates_empty_and_incomplete_scans_from_parent_errors() {
 }
 
 #[test]
+fn sidebar_tags_locate_their_commit_including_tag_only_history() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path();
+    let project = repository(path);
+    run(path, &["switch", "--detach"]);
+    run(path, &["commit", "--allow-empty", "-m", "仅标签保留的提交"]);
+    let target = run(path, &["rev-parse", "HEAD"]);
+    run(path, &["tag", "light"]);
+    run(path, &["tag", "-a", "release", "-m", "版本说明"]);
+    run(path, &["tag", "-a", "nested", "release", "-m", "嵌套标签"]);
+    run(path, &["tag", "file", "HEAD:first"]);
+    run(path, &["switch", "main"]);
+
+    let status = git::status(&project).unwrap();
+    let tags = status.tags;
+    assert_eq!(tags.len(), 4);
+    for name in ["release", "nested", "light"] {
+        let tag = tags.iter().find(|tag| tag.name == name).unwrap();
+        assert_eq!(tag.oid.as_deref(), Some(target.as_str()), "{name}");
+    }
+    let file = tags.iter().find(|tag| tag.name == "file").unwrap();
+    assert!(file.oid.is_none());
+}
+
+#[test]
 fn reads_real_index_and_worktree() {
     let temp = tempfile::tempdir().unwrap();
     let project = repository(temp.path());

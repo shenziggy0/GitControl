@@ -52,7 +52,7 @@
       </template>
     </div>
     <button class="group" @click="tagsOpen=!tagsOpen" :aria-expanded="tagsOpen">标签 <small x-text="s.repo?.tags.length"></small><i data-lucide="chevron-right"></i></button>
-    <div x-show="tagsOpen"><template x-for="tag in s.repo?.tags||[]" :key="tag.name"><button class="tree" @click="locate(tag.oid,true)"><i data-lucide="tag"></i><span x-text="tag.name"></span></button></template></div></div>
+    <div x-show="tagsOpen"><template x-for="tag in s.repo?.tags||[]" :key="tag.name"><button class="tree" :disabled="!tag.oid||s.graphBusy" :title="!tag.oid?'此标签未指向提交':s.graphBusy?'正在读取提交历史…':tag.name" @click="locate(tag.oid,true)"><i data-lucide="tag"></i><span x-text="tag.name"></span></button></template></div></div>
     </div>
     <div class="sidefoot">
       <span id="appearance-label">外观</span>
