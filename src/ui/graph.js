@@ -52,9 +52,9 @@ function refBadge(ref) {
 export function mountGraph(state, Alpine, pageSize) {
   const list=document.getElementById('history-list');
   let refsBySha = new Map();
-  const height = row => refsBySha.has(row.commit.sha) ? 56 : 36;
-  const nodeOffset = 18;
-  const x = lane => 10+lane*13;
+  const height = row => refsBySha.has(row.commit.sha) ? 82 : 58;
+  const nodeOffset = 20;
+  const x = lane => 11+lane*12;
   let layoutKey = '';
   let rows = [];
   let renderedPage='';
@@ -94,8 +94,15 @@ export function mountGraph(state, Alpine, pageSize) {
       button.setAttribute('aria-pressed','false');
       const heading=document.createElement('span');heading.className='row-heading';
       const subject=document.createElement('span');subject.className='subject';subject.textContent=commit.subject;
-      const author=document.createElement('span');author.className='author';author.textContent=commit.author;
-      heading.append(subject,author);button.append(heading);
+      heading.append(subject);
+      const meta=document.createElement('span');
+      meta.className='row-meta';
+      const hash=document.createElement('code');
+      hash.textContent=commit.sha.slice(0,7);
+      const author=document.createElement('span');
+      author.className='author';author.textContent=commit.author;
+      meta.append(hash,author);
+      button.append(heading,meta);
       if (refsBySha.has(commit.sha)) {
         const labels=document.createElement('span');labels.className='row-pointers';
         for (const ref of refsBySha.get(commit.sha)) labels.append(refBadge(ref));

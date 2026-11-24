@@ -22,7 +22,7 @@ GitControl 是一个 macOS 桌面 Git 工作台。选中一个仓库，就能看
 
 | 想做什么 | 在哪里操作 |
 | --- | --- |
-| 看哪些改动已经暂存 | 在「分支状态 → 工作区更改」查看已暂存、未暂存和未跟踪文件。点文件名查看差异。 |
+| 看哪些改动已经暂存 | 在「工作台 → 工作区更改」查看已暂存、未暂存和未跟踪文件。点文件名查看差异。 |
 | 确认本地和远端是否同步 | 点「刷新」，在「分支位置」对照两边的提交号。远端连接失败时，界面会标出错误和已有结果的核对时间。 |
 | 找到某次提交 | 按 **⌘P** 输入分支名、提交说明或短提交号。也可以在右侧提交图按分支筛选，点提交查看文件。 |
 | 在项目目录里运行命令 | 点窗口下方的「终端」。切换项目后再回来，可以接着使用原来的 shell。 |
@@ -54,10 +54,10 @@ cargo test --locked --manifest-path src-tauri/Cargo.toml
 
 ## 维护者手动打包与发布
 
-1. **准备版本。** 对齐 `package.json`、`src-tauri/Cargo.toml` 和 `src-tauri/tauri.conf.json` 的版本号，更新 npm 与 Cargo 锁文件，将准备发布的提交推送到 GitHub。
-2. **手动打包。** 在 Actions 选择「打包 macOS 安装包」，点 **Run workflow**，选择发布分支。Apple Silicon 和 Intel 会分别构建。[打开打包工作流](https://github.com/shenziggy0/GitControl/actions/workflows/package.yml)
+1. **准备标签。** 将发布提交推送到 GitHub，再为该提交创建并推送三段数字版本的标签，例如 `0.1.1` 或 `v0.1.1`。
+2. **按标签打包。** 手动运行 `gh workflow run package.yml --ref 0.1.1`，将 `0.1.1` 换成实际标签。Apple Silicon 和 Intel 会分别构建。标签的数字版本会写入应用并用于命名 DMG。按分支运行时使用 `src-tauri/tauri.conf.json` 中的版本。[打开打包工作流](https://github.com/shenziggy0/GitControl/actions/workflows/package.yml)
 3. **取出安装包。** 在本次运行的 **Artifacts** 下载两个 ZIP，分别解压，得到 `GitControl_<版本>_aarch64.dmg` 和 `GitControl_<版本>_x64.dmg`。
-4. **手动发布。** 创建或选择指向本次构建提交的标签（例如 `v0.1.0`），填写更新说明，上传两个 DMG，确认后点 **Publish release**。[新建 Release](https://github.com/shenziggy0/GitControl/releases/new)
+4. **手动发布。** 选择用于打包的标签，填写更新说明，上传两个 DMG，确认后点 **Publish release**。[新建 Release](https://github.com/shenziggy0/GitControl/releases/new)
 
 如需在自己的 Mac 上打包当前芯片的版本，可在安装依赖后运行：
 

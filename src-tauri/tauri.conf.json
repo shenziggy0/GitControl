@@ -9,7 +9,10 @@
     "frontendDist": "../dist"
   },
   "app": {
-    "windows": [{"label":"main","title":"GitControl","width":1440,"height":880,"minWidth":860,"minHeight":580}],
+    "windows": [{
+      "label":"main","title":"GitControl","width":1440,"height":880,"minWidth":380,"minHeight":480,
+      "titleBarStyle":"Overlay","hiddenTitle":true,"trafficLightPosition":{"x":18,"y":26}
+    }],
     "security": {"csp":"default-src 'self'; script-src 'self' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src ipc: http://ipc.localhost"}
   },
   "bundle": {"active":true,"targets":["app","dmg"],"icon":["icons/icon.icns"],"macOS":{"minimumSystemVersion":"13.0","signingIdentity":"-"}}

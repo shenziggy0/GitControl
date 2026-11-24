@@ -1,20 +1,27 @@
 import Alpine from 'alpinejs';
-import { Channel, invoke } from '@tauri-apps/api/core';
+import { Channel, invoke, isTauri } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import {
-  createIcons, ArrowDown, ArrowLeft, ArrowUp, ArrowUpRight, ChevronLeft, ChevronRight, ChevronUp,
-  CircleCheck, Cloud, FileDiff, Files, FileText, FolderGit2, GitBranch,
-  GitCommitHorizontal, GitCompareArrows, GitFork, ListFilter, MessageSquare, Monitor,
-  PanelLeft, Plus, RefreshCw, Search, Settings, Square, SquareTerminal, Tag, X
+  createIcons, ArrowDownToLine, ArrowLeft, ArrowUp, ArrowUpFromLine, ArrowUpRight,
+  ChevronLeft, ChevronRight, ChevronUp, CircleCheck, Cloud, CornerDownLeft, FileDiff, Files,
+  FileText, FolderGit2, FolderOpen, GitBranch, GitCommitHorizontal, GitCompareArrows,
+  GitGraph, Layers, LayoutDashboard, ListFilter, MessageSquare, Monitor, Moon, PanelLeft,
+  Plus, RefreshCw, Search, Settings, Square, SquareTerminal, Sun, Tag, X
 } from 'lucide';
 import template from './workspace.html?raw';
 import { mountGraph } from './graph.js';
-import { showTerminal, closeTerminal } from './terminal.js';
+import { showTerminal, closeTerminal, updateTerminalAppearance } from './terminal.js';
 import './style.css';
 
 const PAGE_SIZE = 60;
 let selectionQueue = Promise.resolve();
 let searchTrigger = null;
+let searchExit = null;
+let viewEntrance = null;
+const systemDark = matchMedia('(prefers-color-scheme: dark)');
+const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)');
+const compactLayout = matchMedia('(max-width: 960px)');
+const appearanceKey = 'gitcontrol.appearance';
 const groups = [
   {id:'staged', label:'已暂存'}, {id:'unstaged', label:'未暂存'},
   {id:'untracked', label:'未跟踪'}, {id:'conflict', label:'冲突'}
@@ -50,7 +57,8 @@ function branchPairs(s) {
 Alpine.data('workspace',()=>({
   projects:[], sessions:{}, projectId:null, empty:session(), sidebar:true, projectsOpen:true,
   branchesOpen:true, remotesOpen:false, tagsOpen:false, palette:false, query:'', notice:'',
-  claudeExecutable:null,
+  pane:'editor', appearance:'system', searchIndex:0, loadingProjects:isTauri(), claudeExecutable:null,
+  pathDraft:'', pathError:'', savingPath:false,
   selectionVersion:0, openingChild:false,
   get project(){return this.projects.find(p=>p.id===this.projectId)},
   get s(){return this.sessions[this.projectId]||this.empty},
@@ -148,14 +156,35 @@ Alpine.data('workspace',()=>({
   get pageCount(){return Math.ceil(this.history.length/PAGE_SIZE)},
   get pageRange(){return (this.s.page*PAGE_SIZE+1)+'–'+Math.min((this.s.page+1)*PAGE_SIZE,this.history.length)+' / '+this.history.length},
   get matches(){
+    if (!this.palette) return [];
     const q=this.query.trim().toLowerCase();
-    const all=this.projects.map(p=>({label:p.name,kind:'项目',project:p.id}));
-    for (const ref of this.refs) all.push({label:ref.name,kind:ref.kind==='local'?'本地':'云端',ref});
-    for (const commit of this.s.all) all.push({label:commit.subject,kind:this.short(commit.sha),commit});
-    return all.filter(hit=>(hit.kind+' '+hit.label).toLowerCase().includes(q)).slice(0,12);
+    const hits=[];
+    function include(hit){
+      if ((hit.kind+' '+hit.label).toLowerCase().includes(q) || hit.commit?.sha.startsWith(q)) hits.push(hit);
+      return hits.length===12;
+    }
+    for (const project of this.projects) {
+      if (include({key:'project/'+project.id,label:project.name,kind:'项目',project:project.id})) return hits;
+    }
+    for (const ref of this.refs) {
+      if (include({key:ref.kind+'/'+ref.name,label:ref.name,kind:ref.kind==='local'?'本地':'云端',ref})) return hits;
+    }
+    for (const commit of this.s.all) {
+      if (include({key:commit.sha,label:commit.subject,kind:this.short(commit.sha),commit})) break;
+    }
+    return hits;
   },
   async init(){
+    try {
+      const saved=localStorage.getItem(appearanceKey);
+      if (['system','light','dark'].includes(saved)) this.appearance=saved;
+    } catch { /* The system appearance also works without local storage. */ }
+    this.applyAppearance();
+    systemDark.addEventListener('change',()=>this.applyAppearance());
+    reducedMotion.addEventListener('change',()=>updateTerminalAppearance());
+    if (isTauri() && /Mac/.test(navigator.platform)) document.documentElement.classList.add('native-mac');
     mountGraph(this,Alpine,PAGE_SIZE);
+    if (!isTauri()) return;
     try {
       await listen('workspace-changed',({payload})=>{if(payload===this.projectId)this.refresh(payload,false)});
       window.addEventListener('focus',()=>{if(this.projectId)this.refresh(this.projectId,false)});
@@ -165,6 +194,22 @@ Alpine.data('workspace',()=>({
       const id=config.selected||this.projects[0]?.id;
       if(id)await this.selectProject(id);
     } catch(error){this.report(error);}
+    finally {this.loadingProjects=false;}
+  },
+  setAppearance(mode){
+    this.appearance=mode;
+    this.applyAppearance();
+    try { localStorage.setItem(appearanceKey,mode); } catch { /* Keep the choice for this window. */ }
+  },
+  applyAppearance(){
+    document.documentElement.dataset.theme=this.appearance==='system' ? (systemDark.matches?'dark':'light') : this.appearance;
+    updateTerminalAppearance();
+  },
+  goPane(pane){
+    this.pane=pane;
+    if (pane==='editor' && compactLayout.matches) this.$nextTick(()=>{
+      if (this.pane==='editor' && !this.palette && !this.$refs.settingsDialog.open) this.$refs.editor.focus({preventScroll:true});
+    });
   },
   report(error){this.notice=String(error);},
   short(oid){return oid?.slice(0,7)||'';},
@@ -174,7 +219,10 @@ Alpine.data('workspace',()=>({
     if(this.s.remotes[branch.remote]?.error && this.s.remotes[branch.remote]?.timestamp)return '按上次云端核对结果';
     if(!branch.merge)return '尚未关联上游';
     if(branch.counts?.every(n=>n===0))return '已同步';
-    if(branch.counts)return '已比较';
+    if(branch.counts) {
+      const [ahead,behind]=branch.counts;
+      return [ahead&&'领先 '+ahead,behind&&'落后 '+behind].filter(Boolean).join(' · ');
+    }
     return '同步状态待核对';
   },
   remoteText(r){
@@ -184,6 +232,7 @@ Alpine.data('workspace',()=>({
     return r.name+(r.history_error?' · '+r.history_error:' · 已核对')+last;
   },
   async addProject(){
+    if (!isTauri()) {this.report('请在 GitControl 桌面应用中选择本机文件夹。');return;}
     try {
       const p=await invoke('project_open');
       if(!p)return;
@@ -195,6 +244,7 @@ Alpine.data('workspace',()=>({
     if (!this.projects.some(item=>item.id===project.id)) this.projects.push(project);
   },
   async selectProject(id,focusTerminal=true){
+    this.goPane('editor');
     this.notice='';
     if(!this.sessions[id])this.sessions[id]=session();
     this.selectionVersion++;
@@ -363,13 +413,21 @@ Alpine.data('workspace',()=>({
   toggleFile(file){this.s.selected=this.isSelected(file)?this.s.selected.filter(f=>f.path!==file.path||f.group!==file.group):this.s.selected.concat(file);},
   scopeChanged(){this.s.page=0;this.s.focusSha=null;},
   turnPage(amount){this.s.page=Math.max(0,Math.min(this.pageCount-1,this.s.page+amount));this.s.focusSha=null;},
-  locate(oid){
+  locate(oid,reveal=false){
     let index=this.history.findIndex(c=>c.sha===oid);
     if(index<0&&this.s.scope!=='all'){this.s.scope='all';index=this.history.findIndex(c=>c.sha===oid);}
     if(index<0){this.report('此提交暂未载入，请刷新后再定位。');return;}
     this.s.page=Math.floor(index/PAGE_SIZE);
     this.s.focusSha=oid;
     this.s.focusSerial++;
+    if (reveal) {
+      this.goPane('history');
+      this.$nextTick(()=>{
+        const row=document.querySelector('.graph-row[aria-pressed="true"]');
+        row?.scrollIntoView({block:'nearest'});
+        row?.focus({preventScroll:true});
+      });
+    }
   },
   editorBuffer(view){
     return this.$refs.editor.querySelector('[data-view="'+view+'"]');
@@ -381,19 +439,25 @@ Alpine.data('workspace',()=>({
     if (s.view === 'status') s.statusScroll = buffer.scrollTop;
     else if (this.detailOpen) this.detailView.scroll = buffer.scrollTop;
   },
-  showEditorView(view, scroll){
+  showEditorView(view, scroll, direction=1){
     const s = this.s;
     s.view = view;
     this.$nextTick(() => {
       if (this.s !== s || s.view !== view) return;
       const buffer = this.editorBuffer(view);
-      if (buffer) buffer.scrollTop = scroll;
+      if (!buffer) return;
+      buffer.scrollTop = scroll;
+      viewEntrance?.cancel();
+      if (!reducedMotion.matches) viewEntrance=buffer.animate([
+        {opacity:.5,transform:'translateX('+direction*10+'px)'},
+        {opacity:1,transform:'translateX(0)'}
+      ],{duration:230,easing:'cubic-bezier(.2,.78,.25,1)'});
     });
   },
   showStatus(){
     if (this.s.view === 'status') return;
     this.rememberEditorScroll();
-    this.showEditorView('status', this.s.statusScroll);
+    this.showEditorView('status', this.s.statusScroll,-1);
   },
   resumeDetail(){
     if (!this.detailView || this.detailOpen) return;
@@ -401,6 +465,7 @@ Alpine.data('workspace',()=>({
     this.showEditorView(this.detailView.view, this.detailView.scroll);
   },
   openDetail(detail){
+    this.goPane('editor');
     const s = this.s;
     if (this.detailOpen && this.detailView.key === detail.key) return null;
     this.rememberEditorScroll();
@@ -413,18 +478,18 @@ Alpine.data('workspace',()=>({
     this.s.detailTrail.pop();
     const detail = this.detailView;
     if (detail) {
-      this.showEditorView(detail.view, detail.scroll);
+      this.showEditorView(detail.view, detail.scroll,-1);
       const oid = detail.commit?.sha ?? detail.branch?.oid;
       if (oid && this.s.all.some(commit => commit.sha === oid)) this.locate(oid);
     } else {
-      this.showEditorView('status', this.s.statusScroll);
+      this.showEditorView('status', this.s.statusScroll,-1);
     }
     this.$refs.editor.focus({preventScroll:true});
   },
   closeDetail(){
     this.s.detailTrail = [];
-    this.showEditorView('status', this.s.statusScroll);
-    this.$refs.statusTab.focus({preventScroll:true});
+    this.showEditorView('status', this.s.statusScroll,-1);
+    this.$refs.editor.focus({preventScroll:true});
   },
   async inspect(commit){
     if (!commit) return;
@@ -464,15 +529,47 @@ Alpine.data('workspace',()=>({
     }
   },
   openSearch(trigger){
+    if (this.$refs.settingsDialog.open) return;
+    searchExit?.cancel();
+    searchExit=null;
     if (!this.palette) {
       searchTrigger=trigger||document.activeElement;
       this.query='';
+      this.searchIndex=0;
       this.palette=true;
-      this.$refs.searchDialog.showModal();
+      const anchor=(trigger||this.$refs.launch).getBoundingClientRect();
+      const dialog=this.$refs.searchDialog;
+      dialog.style.setProperty('--entry-x',anchor.left+anchor.width/2>innerWidth/2?'18px':'-18px');
+      dialog.style.setProperty('--entry-y',anchor.top<innerHeight/3?'-10px':'10px');
+      dialog.showModal();
     }
     this.$refs.search.focus();
   },
+  moveSearch(amount){
+    const count=this.matches.length;
+    if (!count) return;
+    this.searchIndex=(this.searchIndex+amount+count)%count;
+    document.getElementById('search-hit-'+this.searchIndex)?.scrollIntoView({block:'nearest'});
+  },
+  searchKey(event){
+    if (event.isComposing || event.keyCode===229) return;
+    if (!['ArrowDown','ArrowUp','Enter'].includes(event.key)) return;
+    event.preventDefault();
+    if (event.key==='Enter') this.choose(this.matches[this.searchIndex]);
+    else this.moveSearch(event.key==='ArrowDown'?1:-1);
+  },
   closeSearch(restore=true){
+    if (!this.palette) return;
+    const dialog=this.$refs.searchDialog;
+    if (restore && !reducedMotion.matches && !searchExit) {
+      const exit=dialog.firstElementChild.animate([{opacity:1,transform:'none'},{opacity:0,transform:'translateY(-5px) scale(.985)'}],{duration:115,easing:'ease-in'});
+      searchExit=exit;
+      exit.finished.then(()=>{if (searchExit===exit) this.dismissSearch(restore);},()=>{});
+    } else if (!restore || !searchExit) this.dismissSearch(restore);
+  },
+  dismissSearch(restore){
+    searchExit?.cancel();
+    searchExit=null;
     this.$refs.searchDialog.close();
     this.palette=false;
     if (restore) {
@@ -490,6 +587,7 @@ Alpine.data('workspace',()=>({
     this.$refs.editor.focus({preventScroll:true});
   },
   shortcut(event){
+    if(event.isComposing||event.keyCode===229)return;
     if((event.metaKey||event.ctrlKey)&&event.key.toLowerCase()==='p'){
       event.preventDefault();
       event.stopPropagation();
@@ -502,6 +600,7 @@ Alpine.data('workspace',()=>({
     }
   },
   openChat(){
+    this.goPane('editor');
     if (!this.project||this.s.view==='chat') return;
     const s=this.s;
     const source=this.editorBuffer(s.view);
@@ -512,6 +611,7 @@ Alpine.data('workspace',()=>({
   },
   toggleChat(){
     const s=this.s;
+    if (compactLayout.matches && this.pane!=='editor' && s.view==='chat') {this.goPane('editor');return;}
     if (s.view!=='chat') {this.openChat();return;}
     const origin=s.chatOrigin;
     s.chat=false;
@@ -529,19 +629,42 @@ Alpine.data('workspace',()=>({
       if (source) source.scrollTop=origin.scroll;
     });
   },
-  toggleTerminal(){if(!this.project)return;this.s.term=!this.s.term;this.$nextTick(()=>this.syncTerminal());},
+  toggleTerminal(){
+    if(!this.project)return;
+    const offscreen=compactLayout.matches&&this.pane!=='editor';
+    this.goPane('editor');
+    this.s.term=offscreen||!this.s.term;
+    this.$nextTick(()=>this.syncTerminal());
+  },
   openProjectTerminal(){this.s.term=true;this.$nextTick(()=>this.syncTerminal());},
   syncTerminal(stealFocus=true){
     const id=this.projectId;
     showTerminal(id,this.s.term,this.$refs.terminals,error=>this.report(error),
-      ()=>stealFocus&&this.projectId===id&&!this.palette);
+      ()=>stealFocus&&this.projectId===id&&this.s.term&&!this.palette&&!this.$refs.settingsDialog.open&&(!compactLayout.matches||this.pane==='editor'));
   },
   async closeTerminal(){this.s.term=false;try{await closeTerminal(this.projectId);}catch(error){this.report(error);}},
-  async configureClaude(){
-    const value=window.prompt('Claude Code 可执行路径。留空使用自动发现。',this.claudeExecutable||'');
-    if(value===null)return;
-    try{await invoke('claude_path',{path:value.trim()||null});this.claudeExecutable=value.trim()||null;}
-    catch(error){this.report(error);}
+  configureClaude(){
+    this.pathDraft=this.claudeExecutable||'';
+    this.pathError='';
+    this.$refs.settingsDialog.showModal();
+    this.$refs.claudePath.focus();
+  },
+  closeSettings(){
+    if (this.savingPath) return;
+    this.$refs.settingsDialog.close();
+    this.$refs.settingsTrigger.focus({preventScroll:true});
+  },
+  async saveClaudePath(){
+    if (this.savingPath) return;
+    const path=this.pathDraft.trim()||null;
+    this.savingPath=true;
+    try {
+      await invoke('claude_path',{path});
+      this.claudeExecutable=path;
+      this.savingPath=false;
+      this.closeSettings();
+    } catch(error){this.pathError=String(error);}
+    finally {this.savingPath=false;}
   },
   scrollChat(){this.$nextTick(()=>{const area=this.$refs.messages;if(area)area.scrollTop=area.scrollHeight;});},
   async ask(question){
@@ -569,14 +692,23 @@ Alpine.data('workspace',()=>({
 
 const app = document.querySelector('#app');
 app.innerHTML = template;
+app.addEventListener('pointerdown',event=>{
+  const control=event.target.closest('.commandbox, .refresh-button, .layout-actions button, .segment button, .hero-action');
+  if (!control || control.disabled || reducedMotion.matches) return;
+  const rect=control.getBoundingClientRect();
+  control.style.setProperty('--press-x',(event.clientX-rect.left)+'px');
+  control.style.setProperty('--press-y',(event.clientY-rect.top)+'px');
+});
 createIcons({
   root: app,
   inTemplates: true,
+  attrs: {'aria-hidden':'true','focusable':'false'},
   icons: {
-    ArrowDown, ArrowLeft, ArrowUp, ArrowUpRight, ChevronLeft, ChevronRight, ChevronUp,
-    CircleCheck, Cloud, FileDiff, Files, FileText, FolderGit2, GitBranch,
-    GitCommitHorizontal, GitCompareArrows, GitFork, ListFilter, MessageSquare, Monitor,
-    PanelLeft, Plus, RefreshCw, Search, Settings, Square, SquareTerminal, Tag, X
+    ArrowDownToLine, ArrowLeft, ArrowUp, ArrowUpFromLine, ArrowUpRight, ChevronLeft, ChevronRight,
+    ChevronUp, CircleCheck, Cloud, CornerDownLeft, FileDiff, Files, FileText, FolderGit2, FolderOpen,
+    GitBranch, GitCommitHorizontal, GitCompareArrows, GitGraph, Layers, LayoutDashboard,
+    ListFilter, MessageSquare, Monitor, Moon, PanelLeft, Plus, RefreshCw, Search, Settings,
+    Square, SquareTerminal, Sun, Tag, X
   }
 });
 app.setAttribute('@keydown.window.capture','shortcut($event)');

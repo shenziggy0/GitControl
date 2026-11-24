@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "main",
-  "description": "GitControl 主窗口可订阅本机工作区变化",
+  "description": "GitControl 主窗口可订阅工作区变化，支持拖动标题栏和双击缩放窗口",
   "windows": ["main"],
-  "permissions": ["core:event:allow-listen", "core:event:allow-unlisten"]
+  "permissions": ["core:event:allow-listen", "core:event:allow-unlisten", "core:window:allow-start-dragging", "core:window:allow-internal-toggle-maximize"]
 }

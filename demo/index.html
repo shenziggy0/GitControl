@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <link rel="icon" href="data:,"><title>GitControl · 工作空间</title>
+  <link rel="stylesheet" href="style.css">
+  <script src="snapshot.js"></script><script src="graph.js"></script><script src="ui.js"></script><script defer src="vendor/alpine.min.js"></script>
+</head>
+<body x-data="workspace()" x-init="mountGraph($data)" @keydown.window="shortcut($event)" x-cloak>
+<svg class="symbols" aria-hidden="true" xmlns="http://www.w3.org/2000/svg"><defs>
+<symbol id="i-project" viewBox="0 0 24 24"><path d="M4 5.5h6l2 2H20v11H4z"/></symbol>
+<symbol id="i-files" viewBox="0 0 24 24"><path d="M8 3h8l4 4v12H8zM16 3v5h4M4 8v13h11"/></symbol>
+<symbol id="i-branch" viewBox="0 0 24 24"><circle cx="7" cy="5" r="2.4"/><circle cx="7" cy="19" r="2.4"/><circle cx="17" cy="7" r="2.4"/><path d="M7 7.5v9M7 14c5 0 10-1 10-4.5"/></symbol>
+<symbol id="i-search" viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 5 5"/></symbol>
+<symbol id="i-chat" viewBox="0 0 24 24"><path d="M3.5 5.5h17v12h-9l-5 4v-4h-3zM7.5 10h9M7.5 13h6"/></symbol>
+<symbol id="i-term" viewBox="0 0 24 24"><rect x="3" y="4.5" width="18" height="15" rx="2"/><path d="m6.5 9 3 3-3 3m5 0h5"/></symbol>
+<symbol id="i-tag" viewBox="0 0 24 24"><path d="M4 4h8l9 9-8 8-9-9z"/><circle cx="8" cy="8" r="1"/></symbol>
+<symbol id="i-file" viewBox="0 0 24 24"><path d="M6 3h8l4 4v14H6zM14 3v5h4"/></symbol>
+<symbol id="i-graph" viewBox="0 0 24 24"><path d="M7 4v16m0-4c0-5 9-3 9-9"/><circle cx="7" cy="5" r="2"/><circle cx="7" cy="19" r="2"/><circle cx="16" cy="6" r="2"/></symbol>
+<symbol id="i-layout" viewBox="0 0 24 24"><rect x="3" y="4.5" width="18" height="15" rx="2"/><path d="M9 5v14"/></symbol>
+<symbol id="i-commit" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M2 12h6m8 0h6"/></symbol>
+<symbol id="i-cloud" viewBox="0 0 24 24"><path d="M7 18h10a4.5 4.5 0 0 0 .5-9A6 6 0 0 0 6 8.5 4.8 4.8 0 0 0 7 18z"/></symbol>
+<symbol id="i-check" viewBox="0 0 24 24"><path d="m5 12 4.5 4.5L19 7"/></symbol>
+</defs></svg>
+<header class="titlebar">
+  <span class="app-name"><svg><use href="#i-branch"/></svg>GitControl</span>
+  <button class="commandbox" @click="openSearch()" x-ref="launch"><svg><use href="#i-search"/></svg><span x-text="project+' — 工作空间'"></span><kbd>⌘ P</kbd></button>
+  <div class="layout-actions"><button title="切换项目侧栏" aria-label="切换项目侧栏" @click="sidebar=!sidebar" :aria-pressed="sidebar"><svg><use href="#i-layout"/></svg></button><button id="chat" title="切换 Claude 对话" aria-label="切换 Claude 对话" :aria-pressed="s.chat" @click="toggleChat()"><svg><use href="#i-chat"/></svg></button><button id="term" title="切换终端" aria-label="切换终端" :aria-pressed="s.term" @click="toggleTerminal()"><svg><use href="#i-term"/></svg></button></div>
+</header>
+<div class="shell" :class="{'noside':!sidebar}">
+  <nav class="activity" aria-label="工作台工具">
+    <button title="项目资源管理器" aria-label="项目资源管理器" :aria-pressed="sidebar" @click="sidebar=!sidebar"><svg><use href="#i-files"/></svg></button>
+    <button title="搜索项目或提交" aria-label="搜索项目或提交" @click="openSearch()"><svg><use href="#i-search"/></svg></button>
+    <button title="分支状态" aria-label="查看分支状态" @click="s.view='status'"><svg><use href="#i-branch"/></svg></button>
+    <button title="Claude 对话" aria-label="打开或收起聊天" @click="toggleChat()"><svg><use href="#i-chat"/></svg></button>
+  </nav>
+  <aside class="sidebar" x-show="sidebar"><header class="sidehead">资源管理器</header>
+    <button class="group" @click="projectsOpen=!projectsOpen" :aria-expanded="projectsOpen"><i x-text="projectsOpen?'⌄':'›'"></i>项目 <small x-text="projects.length"></small></button>
+    <div x-show="projectsOpen"><template x-for="name in projects"><button class="project tree" @click="project=name" :aria-current="project===name?'page':false"><svg><use href="#i-project"/></svg><span x-text="name"></span><em x-show="name==='Snapshoot'" x-text="repo.branch"></em></button></template></div>
+    <div x-show="active"><button class="group" @click="branchesOpen=!branchesOpen" :aria-expanded="branchesOpen"><i x-text="branchesOpen?'⌄':'›'"></i>本地分支 <small x-text="repo.branches.length"></small></button>
+    <div x-show="branchesOpen"><template x-for="b in repo.branches"><button class="tree branch" :class="{'viewing':s.view==='branch'&&s.branch?.name===b.name}" @click="branchView(b)"><svg><use href="#i-branch"/></svg><span x-text="b.name"></span><em :class="{'red':b.name===repo.branch}" x-text="b.name===repo.branch?'HEAD':b.missingUpstream?'上游已失效':b.behind?'↓ '+b.behind:''"></em></button></template></div>
+    <button class="group" @click="remotesOpen=!remotesOpen" :aria-expanded="remotesOpen"><i x-text="remotesOpen?'⌄':'›'"></i>云端分支 <small x-text="repo.remotes.length"></small></button>
+    <div x-show="remotesOpen"><template x-for="r in allRefs.filter(r=>r.kind==='remote')"><button class="tree branch" :title="r.name" @click="branchView(r)" :class="{'viewing':s.view==='branch'&&s.branch?.name===r.name}"><svg><use href="#i-cloud"/></svg><span x-text="r.name"></span></button></template></div>
+    <button class="group" @click="tagsOpen=!tagsOpen" :aria-expanded="tagsOpen"><i x-text="tagsOpen?'⌄':'›'"></i>最近标签</button>
+    <div x-show="tagsOpen"><template x-for="c in tags"><button class="tree" @click="inspect(c)"><svg><use href="#i-tag"/></svg><span x-text="c.refs.split('tag: ')[1].split(',')[0]"></span></button></template></div></div>
+    <div class="sidefoot" x-text="path.replace('/Users/ziggy','~')"></div>
+  </aside>
+  <main class="editor">
+    <nav class="tabs" aria-label="编辑器标签">
+      <button @click="s.view='status'" :aria-pressed="s.view==='status'"><svg><use href="#i-branch"/></svg>分支状态</button>
+      <button x-show="s.view==='branch'" aria-pressed="true"><svg><use href="#i-branch"/></svg><span x-text="s.branch?.name"></span></button>
+      <button x-show="s.commit" @click="s.view='commit'" :aria-pressed="s.view==='commit'"><svg><use href="#i-commit"/></svg><span x-text="s.commit?.sha"></span></button>
+      <button x-show="s.chat" @click="s.view='chat'" :aria-pressed="s.view==='chat'"><svg><use href="#i-chat"/></svg>Claude</button>
+    </nav>
+    <div class="crumbs"><svg><use href="#i-project"/></svg><span x-text="project"></span><i>›</i><span x-text="({status:'分支状态',chat:'Claude 对话',branch:s.branch?.name,commit:s.commit?.sha})[s.view]"></span></div>
+    <div class="buffer" x-show="s.view==='status'">
+      <div x-show="active">
+        <div class="buffer-heading"><svg><use href="#i-branch"/></svg><h1 x-text="repo.branch"></h1><span class="headref">HEAD</span></div>
+        <div class="tracking">跟踪 <code>origin/master</code><span>·</span>已同步</div>
+        <div class="facts"><span>改动文件 <b>0</b></span><span>↑ 待推送 <b>0</b></span><span>↓ 待拉取 <b>0</b></span></div>
+        <section class="change"><h2>工作区更改</h2><p><svg><use href="#i-check"/></svg>工作区干净</p></section>
+        <section class="compare"><div class="caption"><h2>分支位置</h2><span>点击提交号定位</span></div>
+          <table><thead><tr><th scope="col">分支</th><th scope="col">本地</th><th scope="col" title="制作快照时向远端核对的分支位置">云端</th></tr></thead><tbody>
+          <template x-for="pair in comparison"><tr :class="{'diverged':pair.local&&pair.remote&&pair.local.sha!==pair.remote.sha}">
+            <th scope="row" :title="pair.name"><span x-text="pair.name"></span></th>
+            <td><button x-show="pair.local" @click="locate(pair.local.sha)" :title="'定位本地 '+pair.local?.name" x-text="pair.local?.sha"></button><span x-show="!pair.local" title="无本地分支">—</span></td>
+            <td><button x-show="pair.remote" @click="locate(pair.remote.sha)" :title="'定位云端 '+pair.remote?.name" x-text="pair.remote?.sha"></button><span x-show="!pair.remote" class="absent" :title="pair.local?.up" x-text="pair.local?.missingUpstream?'无此分支':'—'"></span></td>
+          </tr></template></tbody></table>
+          <div class="remote-proof"><svg><use href="#i-cloud"/></svg><span x-text="'origin 核对时间 · '+repo.verifiedAt"></span></div>
+          <details class="stale"><summary x-text="'本机保留的过期远端引用（'+repo.staleRemotes.length+'）'"></summary>
+            <template x-for="ref in repo.staleRemotes"><div><span x-text="ref.name"></span><code x-text="ref.sha"></code></div></template>
+          </details></section>
+        <section class="recent"><div class="caption"><h2>最近提交</h2><button @click="inspect(repo.log[0])" title="查看提交详情"><svg><use href="#i-commit"/></svg><code x-text="repo.log[0].sha"></code> ↗</button></div>
+          <p class="subject-full" x-text="repo.log[0].subject"></p>
+          <div class="authorline" x-text="[repo.log[0].author,repo.log[0].date].join('  ·  ')"></div>
+          <div class="filehead"><svg><use href="#i-file"/></svg><span x-text="repo.headPatch.file"></span><code x-text="'+'+repo.log[0].files[0].plus+' / −'+repo.log[0].files[0].minus"></code></div>
+          <div class="patch" aria-label="最近一次提交的部分差异"><div class="hunk" x-text="repo.headPatch.hunk"></div><template x-for="r in repo.headPatch.rows"><div class="line" :class="{'add':r.mark==='+','del':r.mark==='-'}"><i x-text="r.old"></i><i x-text="r.new"></i><b x-text="r.mark"></b><code x-text="r.line"></code></div></template></div>
+        </section>
+      </div>
+      <div class="empty" x-show="!active"><h1 x-text="project"></h1><p>此文件夹尚未初始化 Git。</p></div>
+    </div>
+    <div class="buffer" x-show="s.view==='commit'"><div class="buffer-heading"><svg><use href="#i-commit"/></svg><h1 x-text="s.commit?.sha"></h1></div><h2 class="commit-title" x-text="s.commit?.subject"></h2><p class="authorline" x-text="[s.commit?.author,s.commit?.date].join(' · ')"></p><p class="parents">父提交 <code x-text="s.commit?.parents"></code></p><div class="caption"><h2 x-text="'改动文件 · '+(s.commit?.files.length||0)"></h2></div><template x-for="file in s.commit?.files||[]"><div class="filerow"><svg><use href="#i-file"/></svg><span x-text="file.path"></span><code x-text="'+'+file.plus+' / −'+file.minus"></code></div></template></div>
+    <div class="buffer" x-show="s.view==='branch'"><div class="buffer-heading"><svg><use href="#i-branch"/></svg><h1 x-text="s.branch?.name"></h1></div><dl><dt>分支类型</dt><dd x-text="s.branch?.kind==='remote'?'云端跟踪分支':'本地分支'"></dd>
+      <template x-if="s.branch&&s.branch.kind!=='remote'"><dt>跟踪分支</dt></template><template x-if="s.branch&&s.branch.kind!=='remote'"><dd x-text="s.branch.up+(s.branch.missingUpstream?'（云端已不存在）':'')"></dd></template>
+      <template x-if="s.branch&&s.branch.kind!=='remote'"><dt>待推送 / 待拉取</dt></template><template x-if="s.branch&&s.branch.kind!=='remote'"><dd x-text="s.branch.missingUpstream?'—':s.branch.ahead+' / '+s.branch.behind"></dd></template>
+      <dt>指向提交</dt><dd><button class="sha-link" @click="locate(s.branch.sha)" x-text="s.branch?.sha"></button></dd></dl></div>
+    <section class="chatpane" x-show="s.view==='chat'"><div class="chathead"><h2>Claude 对话</h2><button @click="toggleChat()" aria-label="收起对话">×</button></div><div class="chatbody" x-ref="messages"><p class="authorline" x-text="'项目 · '+project"></p><button class="prompt" @click="ask('当前分支状态如何？')">当前分支状态如何？ ↗</button><template x-for="m in s.messages"><div class="message"><small x-text="m.who"></small><p x-text="m.text"></p></div></template></div><form class="composer" @submit.prevent="ask(s.draft)"><input x-model="s.draft" aria-label="输入问题" placeholder="询问当前项目…"><button aria-label="发送">↑</button></form></section>
+    <section class="dock" :class="{'opened':s.term}">
+      <div class="dockbar"><button class="docktab" @click="toggleTerminal()" :aria-expanded="s.term"><svg><use href="#i-term"/></svg>终端</button><span class="grow"></span><span x-show="s.term">zsh</span><button @click="toggleTerminal()" :aria-label="s.term?'收起终端':'展开终端'" x-text="s.term?'⌄':'⌃'"></button></div>
+      <div class="terminal" x-show="s.term"><div class="console" x-ref="console"><template x-for="o in s.outputs"><div><b x-text="project+' ❯ '+o.cmd"></b><pre x-text="o.out"></pre></div></template></div><form @submit.prevent="run()"><label x-text="project+' ❯'"></label><input x-ref="cmd" x-model="s.cmd" aria-label="输入命令" placeholder="git status" autocomplete="off" spellcheck="false"></form></div>
+    </section>
+  </main>
+  <section class="history"><header class="historyhead"><svg><use href="#i-graph"/></svg><h2>提交图</h2><span x-show="active" x-text="history.length+' 条'"></span></header>
+    <div class="graphscope" x-show="active"><select aria-label="提交图分支范围" :value="scope" @change="setScope($event.target.value)">
+      <option value="all">所有分支</option><optgroup label="本地"><template x-for="ref in allRefs.filter(r=>r.kind==='local')"><option :value="'local/'+ref.name" x-text="ref.name"></option></template></optgroup>
+      <optgroup label="云端"><template x-for="ref in allRefs.filter(r=>r.kind==='remote')"><option :value="'remote/'+ref.name" x-text="ref.name"></option></template></optgroup></select>
+      <div class="legend"><svg><use href="#i-branch"/></svg>本地 <svg><use href="#i-cloud"/></svg>云端</div></div>
+    <div class="historyscroll" id="history-list" x-show="active"></div><nav class="paging" x-show="active" aria-label="提交图翻页"><button @click="turnPage(-1)" :disabled="page===0" aria-label="上一页">‹</button><span x-text="pageRange"></span><button @click="turnPage(1)" :disabled="page+1>=pageCount" aria-label="下一页">›</button></nav><p class="emptyhistory" x-show="!active">此项目没有提交历史。</p>
+  </section>
+</div>
+<footer><span><svg><use href="#i-layout"/></svg>本机</span><span x-show="active"><svg><use href="#i-branch"/></svg><b x-text="repo.branch"></b></span><span x-show="active">↑ 0　↓ 0</span><span class="grow"></span><span x-text="active?'工作区干净':'本地文件夹'"></span><span x-show="active" x-text="'快照 '+repo.time"></span></footer>
+<div class="scrim" x-show="palette" @click.self="closeSearch()"><section class="picker" role="dialog" aria-label="快速打开"><input x-ref="search" x-model="query" @keydown.enter.prevent="choose(matches[0])" placeholder="搜索项目、提交说明或哈希…" aria-label="搜索项目或提交"><div class="options"><template x-for="m in matches"><button @click="choose(m)"><small x-text="m.kind"></small><span x-text="m.label"></span></button></template><p x-show="!matches.length">没有匹配结果</p></div></section></div>
+</body></html>

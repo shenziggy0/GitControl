@@ -23,10 +23,21 @@ jobs:
           targets: ${{ matrix.target }}
       - run: npm ci
       - name: 构建应用并生成安装包
+        shell: bash
         env:
           TARGET: ${{ matrix.target }}
         run: |
-          npm run tauri -- build --target "$TARGET" --bundles app -- --locked
+          build_args=(--target "$TARGET" --bundles app)
+          if [[ "$GITHUB_REF_TYPE" == tag ]]; then
+            version="${GITHUB_REF_NAME#v}"
+            if [[ ! "$version" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+              printf '无法从标签 %s 读取应用版本号，请使用 1.2.3 或 v1.2.3。\n' "$GITHUB_REF_NAME" >&2
+              exit 1
+            fi
+            printf '按标签 %s 构建应用版本 %s。\n' "$GITHUB_REF_NAME" "$version"
+            build_args+=(--config "{\"version\":\"$version\"}")
+          fi
+          npm run tauri -- build "${build_args[@]}" -- --locked
           python3 scripts/package_macos.py --app "src-tauri/target/$TARGET/release/bundle/macos/GitControl.app" --output-dir release
       - uses: actions/upload-artifact@v4
         with:
