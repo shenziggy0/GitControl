@@ -634,6 +634,13 @@ fn agent_cancel(state: State<App>, project_id: String, request_id: String) -> Re
     Ok(())
 }
 
+// WebKit versions shipped with supported macOS releases may lack the transparency media query.
+#[cfg(target_os = "macos")]
+#[tauri::command]
+fn prefers_solid_surfaces() -> bool {
+    objc2_app_kit::NSWorkspace::sharedWorkspace().accessibilityDisplayShouldReduceTransparency()
+}
+
 fn main() {
     let default_root = std::env::var_os("GITCONTROL_DATA_DIR").map(PathBuf::from);
     tauri::Builder::default()
@@ -661,6 +668,8 @@ fn main() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            #[cfg(target_os = "macos")]
+            prefers_solid_surfaces,
             project_list,
             project_open,
             project_scan_children,

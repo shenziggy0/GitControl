@@ -1,4 +1,4 @@
-import { Cloud, createElement, GitBranch, Tag } from 'lucide';
+import { ChevronRight, Cloud, createElement, GitBranch, Tag } from 'lucide';
 
 // Each lane names the next ancestor reached by a line. An unmerged tip
 // starts a new lane; it has no incoming edge from the preceding commit.
@@ -132,7 +132,8 @@ export function mountGraph(state, Alpine, pageSize) {
         const referenceButton=document.createElement('button');
         referenceButton.type='button';
         referenceButton.className='row-pointers';
-        referenceButton.setAttribute('aria-label','查看 '+refs.length+' 个完整引用');
+        referenceButton.title='查看 '+refs.length+' 个完整引用';
+        referenceButton.setAttribute('aria-label',referenceButton.title);
         referenceButton.setAttribute('aria-haspopup','dialog');
         referenceButton.onclick=()=>showRefs(refs,referenceButton);
 
@@ -142,7 +143,9 @@ export function mountGraph(state, Alpine, pageSize) {
         for (const ref of refs.slice(0,inlineRefs)) labels.append(refBadge(ref));
         const action=document.createElement('span');
         action.className='ref-action';
-        action.textContent='查看 '+refs.length+' 个引用';
+        const remaining=refs.length-inlineRefs;
+        if (remaining>0) action.textContent='+'+remaining;
+        action.append(createElement(ChevronRight,{class:'lucide','aria-hidden':'true'}));
         referenceButton.append(labels,action);
         item.append(referenceButton);
       }

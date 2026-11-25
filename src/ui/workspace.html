@@ -1,17 +1,17 @@
-<header class="titlebar" data-tauri-drag-region="deep">
+<header class="titlebar glass" data-tauri-drag-region="deep">
   <div class="identity">
     <span class="app-name"><span class="brand-mark" aria-hidden="true"></span>GitControl</span>
     <button class="sidebar-toggle icon-button" title="切换项目侧栏" aria-label="切换项目侧栏" @click="sidebar=!sidebar" :aria-expanded="sidebar" aria-controls="project-sidebar"><i data-lucide="panel-left"></i></button>
   </div>
-  <div class="window-location"><i data-lucide="layers"></i>工作空间<span x-show="project">/</span><b x-text="project?.name"></b></div>
-  <button class="commandbox glass" @click="openSearch($el)" x-ref="launch" aria-label="搜索项目、分支或提交"><i data-lucide="search"></i><span>搜索项目、分支或提交</span><kbd>⌘ P</kbd></button>
-  <div class="layout-actions glass">
-    <button id="chat" title="切换 Claude 对话" aria-label="切换 Claude 对话" :disabled="!project" :aria-pressed="s.view==='chat'" @click="toggleChat()"><i data-lucide="message-square"></i></button>
-    <button id="term" title="切换终端" aria-label="切换终端" :disabled="!project" :aria-pressed="s.term" @click="toggleTerminal()"><i data-lucide="square-terminal"></i></button>
+  <div class="window-location" :title="project?.path"><i data-lucide="layers"></i>工作空间<span x-show="project">/</span><b x-text="project?.name"></b></div>
+  <button class="commandbox" @click="openSearch($el)" x-ref="launch" title="搜索项目、分支或提交（⌘P）" aria-label="搜索项目、分支或提交"><i data-lucide="search"></i><span>搜索项目、分支或提交</span><kbd>⌘ P</kbd></button>
+  <div class="layout-actions">
+    <button id="chat" title="切换 Claude 对话" aria-label="切换 Claude 对话" :disabled="!project" :aria-pressed="s.view==='chat'" @click="toggleChat()"><i data-lucide="message-square"></i><span>Claude</span></button>
+    <button id="term" title="切换终端" aria-label="切换终端" :disabled="!project" :aria-pressed="s.term" @click="toggleTerminal()"><i data-lucide="square-terminal"></i><span>终端</span></button>
   </div>
 </header>
 <div class="shell" :class="{'noside':!sidebar}" :data-pane="pane">
-  <aside class="sidebar glass" id="project-sidebar" x-ref="projectSidebar" aria-label="资源管理器">
+  <aside class="sidebar" id="project-sidebar" x-ref="projectSidebar" aria-label="资源管理器">
     <header class="sidehead"><h2>资源管理器</h2><button class="icon-button add-project" x-ref="addProject" aria-label="添加项目" title="添加项目" @click="addProject()"><i data-lucide="plus"></i></button></header>
     <div class="side-scroll">
     <button class="side-link" :aria-current="s.view==='status'?'page':false" @click="goPane('editor'); showStatus()"><i data-lucide="layout-dashboard"></i>工作台</button>
@@ -71,12 +71,12 @@
       </div>
     </div>
   </aside>
-  <main class="editor" x-ref="editor" tabindex="-1">
+  <main class="editor" :class="{'has-project':!!project}" x-ref="editor" tabindex="-1">
     <div class="page-bar">
       <h1 x-text="s.view==='status' ? '工作台' : s.view==='chat' ? 'Claude 对话' : s.view==='diff' ? '文件差异' : s.view==='branch' ? '分支详情' : '提交详情'"></h1>
-      <div class="inline-actions" x-show="active&&s.view==='status'">
-      <button class="prompt" :disabled="!!(s.snapshots?.busy)" :aria-expanded="!!s.snapshots" @click="s.snapshots?s.snapshots=null:showSnapshots()">工作树快照</button>
-      <button class="refresh-button glass" x-show="active&&s.view==='status'" @click="refresh(projectId,true)" :disabled="s.refreshing" :aria-busy="s.refreshing||s.refreshingRemote" aria-label="刷新分支状态">
+      <div class="page-actions inline-actions" x-show="active&&s.view==='status'">
+      <button class="prompt" :disabled="!!(s.snapshots?.busy)" :aria-expanded="!!s.snapshots" @click="s.snapshots?s.snapshots=null:showSnapshots()"><i data-lucide="history"></i>工作树快照</button>
+      <button class="refresh-button" x-show="active&&s.view==='status'" @click="refresh(projectId,true)" :disabled="s.refreshing" :aria-busy="s.refreshing||s.refreshingRemote" aria-label="刷新分支状态">
         <i data-lucide="refresh-cw"></i><span x-text="s.refreshing||s.refreshingRemote?'刷新中':'刷新'"></span>
       </button>
       </div>
@@ -101,29 +101,45 @@
     </div>
     <div class="buffer" data-view="status" :hidden="s.view!=='status'">
       <div x-show="active">
-        <section class="branch-summary">
-          <div class="panorama-content">
-            <div class="hero-label"><i data-lucide="git-branch"></i>当前分支</div>
-            <h2 x-text="s.repo?.branch||(s.repo?.head?'分离 HEAD':'尚无提交')"></h2>
-            <div class="tracking">
-              <span class="headref" x-show="s.repo?.head"><i data-lucide="git-commit-horizontal"></i><code x-text="short(s.repo?.head)"></code></span>
-              <span x-show="current||!s.repo?.head" class="upstream"><code x-show="current?.upstream" x-text="current?.upstream"></code><span x-text="trackingText(current)"></span></span>
+        <section class="branch-summary" aria-label="当前分支概览">
+          <div class="branch-overview">
+            <span class="branch-symbol" aria-hidden="true"><i data-lucide="git-branch"></i></span>
+            <div class="branch-heading">
+              <div class="eyebrow">当前分支</div>
+              <h2 x-text="s.repo?.branch||(s.repo?.head?'分离 HEAD':'尚无提交')"></h2>
+            </div>
+            <button class="headref" x-show="s.repo?.head" :disabled="s.graphBusy"
+              @click="locate(s.repo.head,true)" :title="'在提交图定位 HEAD · '+s.repo?.head"
+              :aria-label="'在提交图定位 HEAD '+short(s.repo?.head)">
+              <i data-lucide="git-commit-horizontal"></i><code x-text="short(s.repo?.head)"></code>
+            </button>
+            <div class="tracking" x-show="current||!s.repo?.head">
+              <span x-show="current?.upstream" class="upstream"><i data-lucide="git-pull-request"></i><code x-text="current?.upstream"></code></span>
+              <span x-text="trackingText(current)"></span>
             </div>
           </div>
+          <div class="facts" role="group" aria-label="工作区与远端状态">
+            <div class="metric"><span class="metric-label"><i data-lucide="files"></i>改动文件</span><b x-text="fileCount"></b></div>
+            <div class="metric sync-state" x-show="syncStatus"><span class="metric-label"><i data-lucide="cloud"></i>远端状态</span><span x-text="syncStatus"></span></div>
+            <button class="metric fact-control" x-show="!syncStatus" @click="openSync(true)" :aria-label="'查看 '+current?.counts?.[0]+' 次待推送提交'">
+              <span class="metric-label"><i data-lucide="arrow-up-from-line"></i>待推送</span><span class="metric-value"><b x-text="current?.counts?.[0]"></b><i data-lucide="chevron-right"></i></span>
+            </button>
+            <button class="metric fact-control" x-show="!syncStatus" @click="openSync(false)" :aria-label="'查看 '+current?.counts?.[1]+' 次待拉取提交'">
+              <span class="metric-label"><i data-lucide="arrow-down-to-line"></i>待拉取</span><span class="metric-value"><b x-text="current?.counts?.[1]"></b><i data-lucide="chevron-right"></i></span>
+            </button>
+          </div>
         </section>
-        <dl class="facts">
-          <div class="fact-files"><dt><i data-lucide="files"></i>改动文件</dt><dd x-text="fileCount"></dd></div>
-          <div x-show="syncStatus" class="sync-state"><dt>远端状态</dt><dd x-text="syncStatus"></dd></div>
-          <div class="fact-push" x-show="!syncStatus"><dt><i data-lucide="arrow-up-from-line"></i>待推送</dt><dd><button class="fact-control" @click="openSync(true)" :aria-label="'查看 '+current?.counts?.[0]+' 次待推送提交'" x-text="current?.counts?.[0]"></button></dd></div>
-          <div class="fact-pull" x-show="!syncStatus"><dt><i data-lucide="arrow-down-to-line"></i>待拉取</dt><dd><button class="fact-control" @click="openSync(false)" :aria-label="'查看 '+current?.counts?.[1]+' 次待拉取提交'" x-text="current?.counts?.[1]"></button></dd></div>
-        </dl>
         <section class="change" x-ref="changes" tabindex="-1"><div class="caption"><h2><i data-lucide="file-diff"></i>工作区更改</h2><span class="count" x-text="s.selected.length?'已选 '+selectedText:fileCount+' 个文件'"></span></div>
           <p class="clean-state" x-show="!fileCount"><i data-lucide="circle-check"></i>工作区干净</p>
           <template x-for="group in changeGroups" :key="group.id"><div x-show="group.files.length" class="change-group">
             <h3 x-text="group.label+' · '+group.files.length"></h3>
-            <template x-for="file in group.files" :key="file.path"><div class="filerow">
+            <template x-for="file in group.files" :key="file.path"><div class="filerow working-file" :class="{selected:isSelected(file)}">
               <label class="file-choice"><input type="checkbox" :disabled="s.commitBusy||group.id==='conflict'" :checked="isSelected(file)" :aria-label="'选择 '+group.label+' '+file.path" @change="toggleFile(file)"></label>
-              <span class="change-code" :data-code="file.code" x-text="file.code"></span><button class="file-link" @click="viewPatch(file,null)" x-text="file.old?file.old+' → '+file.path:file.path"></button>
+              <button class="file-link file-path" @click="viewPatch(file,null)" :title="file.old?file.old+' → '+file.path:file.path" :aria-label="'查看差异 · '+(file.old?file.old+' → ':'')+file.path">
+                <i data-lucide="file-text"></i><span class="file-name" x-text="file.path.split('/').at(-1)"></span>
+                <span class="file-parent" x-text="file.old?file.old+' → '+file.path:file.path.slice(0,file.path.lastIndexOf('/')+1)"></span>
+              </button>
+              <span class="change-code" :data-code="file.code" x-text="file.code"></span>
             </div></template>
           </div></template>
           <form class="commit-form" @submit.prevent="submitSelected()" x-show="s.selected.length||s.commitDraft">
@@ -215,17 +231,17 @@
       </div>
       <p class="authorline" role="status" x-show="loadingProjects&&!project">正在打开工作空间…</p>
       <div class="empty" x-show="!active&&(project||!loadingProjects)">
-        <section class="welcome panorama">
-          <div class="panorama-content">
-            <div class="hero-label"><i data-lucide="folder-git-2"></i><span x-text="project?'项目文件夹':'本地工作空间'"></span></div>
+        <section class="welcome" :class="{'folder-welcome':project}">
+          <div class="welcome-content">
+            <span x-show="!project" class="welcome-mark brand-mark" aria-hidden="true"></span>
+            <div class="eyebrow" x-show="project"><i data-lucide="folder-open"></i>项目文件夹</div>
             <h2 x-text="project?.name||'打开本地项目'"></h2>
             <p role="status" x-show="project" x-text="s.error||(s.repo?.kind==='folder' ? discoveryText : '正在读取仓库…')"></p>
             <button x-show="!project" class="hero-action" @click="addProject()"><i data-lucide="folder-open"></i>选择文件夹</button>
             <button x-show="project&&s.error" class="hero-action" @click="refresh(projectId,true)" :disabled="s.refreshing"><i data-lucide="refresh-cw"></i>重试</button>
           </div>
         </section>
-        <section class="open-guide" x-show="!project">
-          <h2>支持的文件夹</h2>
+        <section class="open-guide" x-show="!project" aria-label="支持的文件夹">
           <div><span class="feature-icon blue"><i data-lucide="folder-git-2"></i></span><p><strong>Git 仓库</strong><span>查看分支、文件改动和提交历史。</span></p></div>
           <div><span class="feature-icon violet"><i data-lucide="layers"></i></span><p><strong>项目父目录</strong><span>在两层子目录内查找 Git 仓库，集中管理多个项目。</span></p></div>
         </section>
@@ -276,28 +292,28 @@
       </section>
     </div>
     <div class="buffer" data-view="diff" :hidden="s.view!=='diff'"><!-- editor-diff --></div>
-    <section class="chatpane" aria-label="Claude 对话" x-show="s.view==='chat'"><div class="chathead"><h2><i data-lucide="folder-git-2"></i><span x-text="project?.name"></span></h2><div><button x-ref="settingsTrigger" @click="configureClaude()" title="设置 Claude 路径" aria-label="设置 Claude 路径"><i data-lucide="settings"></i></button><button @click="toggleChat()" aria-label="收起对话"><i data-lucide="x"></i></button></div></div>
+    <section class="chatpane" aria-label="Claude 对话" x-show="s.view==='chat'"><div class="chathead"><h2><i data-lucide="folder-git-2"></i><span x-text="project?.name"></span></h2><div><button x-ref="settingsTrigger" @click="configureClaude()" title="设置 Claude 路径" aria-label="设置 Claude 路径"><i data-lucide="settings"></i></button><button @click="toggleChat()" title="收起对话" aria-label="收起对话"><i data-lucide="x"></i></button></div></div>
       <div class="chatbody" x-ref="messages"><button class="prompt" x-show="project" @click="ask(s.chatCommit?'这次提交改了什么？':'当前分支状态如何？')" :disabled="!!s.running"><span x-text="s.chatCommit?'这次提交改了什么？':'当前分支状态如何？'"></span><i data-lucide="arrow-up-right"></i></button>
       <template x-for="m in s.messages" :key="m.id"><div class="message" :class="{'outgoing':m.who==='你'}"><small x-text="m.who"></small><p x-text="m.text||'正在回答…'"></p></div></template></div>
       <p class="compose-context" x-show="s.selected.length" x-text="'已选择 '+s.selected.length+' 项工作区改动'"></p>
-      <div class="compose-context inline-actions" x-show="s.chatCommit"><span x-text="'引用提交 · '+short(s.chatCommit)"></span><button @click="s.chatCommit=null" aria-label="移除提交引用"><i data-lucide="x"></i></button></div>
-      <form class="composer" @submit.prevent="ask(s.draft)"><input x-model="s.draft" aria-label="输入问题" :placeholder="s.chatCommit?'询问这条提交…':'询问当前项目…'" :disabled="!project"><button x-show="!s.running" :disabled="!project||!s.draft.trim()" aria-label="发送"><i data-lucide="arrow-up"></i></button><button type="button" x-show="s.running" @click="cancel()" aria-label="停止回答"><i data-lucide="square"></i></button></form>
+      <div class="compose-context inline-actions" x-show="s.chatCommit"><span x-text="'引用提交 · '+short(s.chatCommit)"></span><button @click="s.chatCommit=null" title="移除提交引用" aria-label="移除提交引用"><i data-lucide="x"></i></button></div>
+      <form class="composer" @submit.prevent="ask(s.draft)"><input x-model="s.draft" aria-label="输入问题" :placeholder="s.chatCommit?'询问这条提交…':'询问当前项目…'" :disabled="!project"><button x-show="!s.running" :disabled="!project||!s.draft.trim()" title="发送" aria-label="发送"><i data-lucide="arrow-up"></i></button><button type="button" x-show="s.running" @click="cancel()" title="停止回答" aria-label="停止回答"><i data-lucide="square"></i></button></form>
     </section>
     <section class="dock" x-show="project" :class="{'opened':s.term}">
-      <div class="dockbar"><button class="docktab" @click="toggleTerminal()" :disabled="!project" :aria-expanded="s.term"><i data-lucide="square-terminal"></i>终端</button><span class="grow"></span><span x-show="s.term">shell</span><button x-show="s.term" @click="closeTerminal()" aria-label="关闭终端进程" title="关闭终端进程"><i data-lucide="x"></i></button><button @click="toggleTerminal()" :disabled="!project" :aria-label="s.term?'收起终端':'展开终端'"><i data-lucide="chevron-up"></i></button></div>
+      <div class="dockbar"><button class="docktab" @click="toggleTerminal()" :disabled="!project" :aria-expanded="s.term"><i data-lucide="square-terminal"></i>终端</button><span class="grow"></span><span x-show="s.term">shell</span><button x-show="s.term" @click="closeTerminal()" aria-label="关闭终端进程" title="关闭终端进程"><i data-lucide="x"></i></button><button @click="toggleTerminal()" :disabled="!project" :title="s.term?'收起终端':'展开终端'" :aria-label="s.term?'收起终端':'展开终端'"><i data-lucide="chevron-up"></i></button></div>
       <div class="terminal-stack" x-ref="terminals" x-show="s.term"></div>
     </section>
   </main>
   <section class="history" :aria-label="rightPreview?'文件差异预览':'提交图'">
     <div class="right-preview" x-show="rightPreview"><!-- side-diff --></div>
-    <div class="history-content" x-show="!rightPreview"><header class="historyhead"><span class="feature-icon violet"><i data-lucide="git-graph"></i></span><h2>提交图</h2><span class="count" x-show="active" x-text="history.length+' 条'"></span></header>
+    <div class="history-content" x-show="!rightPreview"><header class="historyhead"><i data-lucide="git-graph"></i><h2>提交图</h2><span class="count" x-show="active" x-text="history.length+' 条'"></span></header>
     <div class="graphscope" x-show="active"><label class="scope-control"><i data-lucide="list-filter"></i><select x-ref="historyScope" aria-label="提交图分支范围" x-model="s.scope" @change="scopeChanged()">
       <option value="all">所有分支</option><optgroup label="本地"><template x-for="ref in s.repo?.local||[]" :key="ref.name"><option :value="'local/'+ref.name" x-text="ref.name"></option></template></optgroup>
       <optgroup label="云端"><template x-for="ref in cloud" :key="ref.name"><option :value="'remote/'+ref.name" x-text="ref.name"></option></template></optgroup></select></label>
       <div class="legend"><span><i data-lucide="git-branch"></i>本地</span><span><i data-lucide="cloud"></i>云端</span></div></div>
     <div class="historyscroll" id="history-list" x-ref="historyList" x-show="active&&history.length"></div>
     <div class="emptyhistory" role="status" x-show="!active||!history.length"><i data-lucide="git-graph"></i><p x-text="s.repo?.kind==='folder'?'选择子仓库后查看提交图':active&&s.graphBusy?'正在读取提交历史…':active?'当前范围内没有提交':'打开仓库后查看提交图'"></p></div>
-    <nav class="paging" x-show="active&&pageCount" aria-label="提交图翻页"><button @click="turnPage(-1)" :disabled="s.page===0" aria-label="上一页"><i data-lucide="chevron-left"></i></button><span x-text="pageRange"></span><button @click="turnPage(1)" :disabled="s.page+1>=pageCount" aria-label="下一页"><i data-lucide="chevron-right"></i></button></nav>
+    <nav class="paging" x-show="active&&pageCount" aria-label="提交图翻页"><button @click="turnPage(-1)" :disabled="s.page===0" title="上一页" aria-label="上一页"><i data-lucide="chevron-left"></i></button><span x-text="pageRange"></span><button @click="turnPage(1)" :disabled="s.page+1>=pageCount" title="下一页" aria-label="下一页"><i data-lucide="chevron-right"></i></button></nav>
     </div>
   </section>
 </div>
@@ -313,10 +329,10 @@
   <span x-show="active" class="status-counts" aria-label="待推送与待拉取"><i data-lucide="arrow-up-from-line"></i><b x-text="current?.counts?.[0]??'—'"></b><i data-lucide="arrow-down-to-line"></i><b x-text="current?.counts?.[1]??'—'"></b></span>
   <span x-show="active"><i class="status-dot" :class="{'modified':fileCount}"></i><span x-text="fileCount ? fileCount+' 个改动文件' : '工作区干净'"></span></span>
 </footer>
-<div class="notice glass" role="status" x-show="notice"><span x-text="notice"></span><button class="icon-button" @click="notice=''" aria-label="关闭提示"><i data-lucide="x"></i></button></div>
+<div class="notice glass" role="status" x-show="notice"><span x-text="notice"></span><button class="icon-button" @click="notice=''" title="关闭提示" aria-label="关闭提示"><i data-lucide="x"></i></button></div>
 <dialog class="scrim" id="graph-refs" aria-labelledby="graph-refs-title" @click.self="$el.close()">
   <section class="settings-sheet glass">
-    <div class="caption"><h2 id="graph-refs-title">提交引用</h2><button type="button" class="icon-button" autofocus @click="$el.closest('dialog').close()" aria-label="关闭提交引用"><i data-lucide="x"></i></button></div>
+    <div class="caption"><h2 id="graph-refs-title">提交引用</h2><button type="button" class="icon-button" autofocus @click="$el.closest('dialog').close()" title="关闭提交引用" aria-label="关闭提交引用"><i data-lucide="x"></i></button></div>
     <ul class="graph-ref-list" tabindex="0" aria-labelledby="graph-refs-title"></ul>
   </section>
 </dialog>
@@ -341,7 +357,7 @@
 </dialog>
 <dialog class="scrim" x-ref="settingsDialog" aria-labelledby="settings-title" @cancel.prevent="closeSettings()" @click.self="closeSettings()">
   <form class="settings-sheet glass" @submit.prevent="saveClaudePath()">
-    <div class="caption"><h2 id="settings-title">Claude 设置</h2><button type="button" class="icon-button" @click="closeSettings()" aria-label="关闭设置"><i data-lucide="x"></i></button></div>
+    <div class="caption"><h2 id="settings-title">Claude 设置</h2><button type="button" class="icon-button" @click="closeSettings()" title="关闭设置" aria-label="关闭设置"><i data-lucide="x"></i></button></div>
     <label for="claude-path">Claude Code 可执行文件路径</label>
     <input id="claude-path" x-ref="claudePath" x-model="pathDraft" :disabled="savingPath" @input="pathError=''" :aria-invalid="!!pathError" :aria-describedby="pathError?'path-help path-error':'path-help'" autocomplete="off" spellcheck="false" placeholder="/usr/local/bin/claude">
     <p id="path-help">留空时自动查找本机安装的 Claude Code。</p><p class="field-error" id="path-error" x-show="pathError" role="alert" x-text="pathError"></p>

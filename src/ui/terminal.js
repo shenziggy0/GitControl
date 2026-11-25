@@ -7,17 +7,22 @@ const sessions = new Map();
 
 function terminalOptions() {
   const dark=document.documentElement.dataset.theme==='dark';
+  const style=getComputedStyle(document.documentElement);
+  const color=name=>style.getPropertyValue('--'+name).trim();
+  // Keep xterm's dark ANSI palette. The light palette also covers apps that emit bright ANSI codes.
+  const ansi = dark ? {} : {
+    black:color('terminal-ansi-black'), red:color('terminal-ansi-red'), green:color('terminal-ansi-green'),
+    yellow:color('terminal-ansi-yellow'), blue:color('terminal-ansi-blue'), magenta:color('terminal-ansi-magenta'),
+    cyan:color('terminal-ansi-cyan'), brightBlack:color('terminal-bright-black'), brightRed:color('terminal-bright-red'),
+    brightGreen:color('terminal-bright-green'), brightYellow:color('terminal-ansi-yellow'), brightBlue:color('terminal-bright-blue'),
+    brightMagenta:color('terminal-bright-magenta'), brightCyan:color('terminal-bright-cyan')
+  };
   return {
     cursorBlink: !matchMedia('(prefers-reduced-motion: reduce)').matches,
     minimumContrastRatio: dark ? 1 : 4.5,
-    theme: dark ? {
-      background:'#171c26', foreground:'#edf1fa', cursor:'#91b7ff', selectionBackground:'#374c70'
-    } : {
-      background:'#f8faff', foreground:'#202a40', cursor:'#2857b9', selectionBackground:'#c6d9ff',
-      black:'#263044', red:'#a22d40', green:'#237045', yellow:'#85570a',
-      blue:'#2457ae', magenta:'#843b99', cyan:'#176d78',
-      brightBlack:'#586171', brightRed:'#b82e45', brightGreen:'#267644', brightYellow:'#85570a',
-      brightBlue:'#225aca', brightMagenta:'#8b399d', brightCyan:'#146a75'
+    theme: {
+      background:color('terminal'), foreground:color('ink'), cursor:color('terminal-cursor'),
+      selectionBackground:color('terminal-selection'), ...ansi
     }
   };
 }

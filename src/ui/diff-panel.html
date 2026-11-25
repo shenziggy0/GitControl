@@ -19,8 +19,8 @@
       <div class="patch readable-diff" x-show="!DIFF_DETAIL.raw && DIFF_DETAIL.patch.lines.length">
         <template x-for="(line,index) in DIFF_DETAIL.patch.lines" :key="index">
           <div class="diff-row" :data-kind="line.kind">
-            <button class="line-number" :disabled="line.old==null||DIFF_DETAIL?.file.group==='conflict'" :aria-label="'查看旧版第 '+line.old+' 行的来源'" @click="lookupLine(DIFF_DETAIL,line,true)" x-text="line.old??''"></button>
-            <button class="line-number" :disabled="line.new==null||DIFF_DETAIL?.file.group==='conflict'" :aria-label="'查看新版第 '+line.new+' 行的来源'" @click="lookupLine(DIFF_DETAIL,line,false)" x-text="line.new??''"></button>
+            <button class="line-number" :disabled="line.old==null||DIFF_DETAIL?.file.group==='conflict'" :aria-hidden="line.old==null" :aria-label="line.old==null?null:'查看旧版第 '+line.old+' 行的来源'" @click="lookupLine(DIFF_DETAIL,line,true)" x-text="line.old??''"></button>
+            <button class="line-number" :disabled="line.new==null||DIFF_DETAIL?.file.group==='conflict'" :aria-hidden="line.new==null" :aria-label="line.new==null?null:'查看新版第 '+line.new+' 行的来源'" @click="lookupLine(DIFF_DETAIL,line,false)" x-text="line.new??''"></button>
             <code x-text="line.text||' '"></code>
           </div>
         </template>

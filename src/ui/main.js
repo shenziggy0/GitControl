@@ -5,7 +5,7 @@ import {
   createIcons, ArrowDownToLine, ArrowLeft, ArrowUp, ArrowUpFromLine, ArrowUpRight,
   ChevronLeft, ChevronRight, ChevronUp, CircleCheck, Cloud, CornerDownLeft, FileDiff, Files,
   FileText, FolderGit2, FolderOpen, GitBranch, GitCommitHorizontal, GitCompareArrows,
-  GitGraph, Layers, LayoutDashboard, ListFilter, MessageSquare, Monitor, Moon, PanelLeft,
+  GitGraph, GitPullRequest, History, Layers, LayoutDashboard, ListFilter, MessageSquare, Monitor, Moon, PanelLeft,
   Plus, RefreshCw, Search, Settings, Square, SquareTerminal, Sun, Tag, X
 } from 'lucide';
 import template from './workspace.html?raw';
@@ -213,7 +213,19 @@ Alpine.data('workspace',()=>Object.defineProperties({
     this.applyAppearance();
     systemDark.addEventListener('change',()=>this.applyAppearance());
     reducedMotion.addEventListener('change',()=>updateTerminalAppearance());
-    if (isTauri() && /Mac/.test(navigator.platform)) document.documentElement.classList.add('native-mac');
+    if (isTauri() && /Mac/.test(navigator.platform)) {
+      const root=document.documentElement;
+      root.classList.add('native-mac');
+      if (!matchMedia('(prefers-reduced-transparency: reduce), (prefers-reduced-transparency: no-preference)').matches) {
+        const syncMaterial=async()=>{
+          try { root.toggleAttribute('data-solid-material',await invoke('prefers_solid_surfaces')); }
+          catch { root.setAttribute('data-solid-material',''); }
+        };
+        root.setAttribute('data-solid-material','');
+        void syncMaterial();
+        window.addEventListener('focus',syncMaterial);
+      }
+    }
     mountGraph(this,Alpine,PAGE_SIZE);
     compactLayout.addEventListener('change', event => {
       const right = this.s.rightDiff;
@@ -574,9 +586,9 @@ Alpine.data('workspace',()=>Object.defineProperties({
       buffer.scrollTop = scroll;
       viewEntrance?.cancel();
       if (!reducedMotion.matches) viewEntrance=buffer.animate([
-        {opacity:.5,transform:'translateX('+direction*10+'px)'},
+        {opacity:.5,transform:'translateX('+direction*4+'px)'},
         {opacity:1,transform:'translateX(0)'}
-      ],{duration:230,easing:'cubic-bezier(.2,.78,.25,1)'});
+      ],{duration:150,easing:'cubic-bezier(.2,.78,.25,1)'});
     });
   },
   showStatus(){
@@ -615,7 +627,7 @@ Alpine.data('workspace',()=>Object.defineProperties({
     if (closed.origin.pane!=='editor') {
       this.restorePane(closed.origin);
     } else {
-      const oid = detail.commit?.sha ?? detail.branch?.oid;
+      const oid = detail?.commit?.sha ?? detail?.branch?.oid;
       if (this.detailOpen && oid && s.all.some(commit=>commit.sha===oid)) this.locate(oid);
       this.$refs.editor.focus({preventScroll:true});
     }
@@ -677,10 +689,7 @@ Alpine.data('workspace',()=>Object.defineProperties({
       this.crossFailures=0;
       this.selectedSearchKey=null;
       this.palette=true;
-      const anchor=(trigger||this.$refs.launch).getBoundingClientRect();
       const dialog=this.$refs.searchDialog;
-      dialog.style.setProperty('--entry-x',anchor.left+anchor.width/2>innerWidth/2?'18px':'-18px');
-      dialog.style.setProperty('--entry-y',anchor.top<innerHeight/3?'-10px':'10px');
       dialog.showModal();
     }
     this.$refs.search.focus();
@@ -722,7 +731,7 @@ Alpine.data('workspace',()=>Object.defineProperties({
       top:bounds.top+'px',left:bounds.left+'px',width:bounds.width+'px',height:bounds.height+'px'
     });
     dialog.after(sheet);
-    const exit=sheet.animate([{opacity:1},{opacity:0,transform:'translateY(-5px) scale(.985)'}],{duration:115,easing:'ease-in'});
+    const exit=sheet.animate([{opacity:1},{opacity:0,transform:'translateY(-4px)'}],{duration:120,easing:'ease-in'});
     searchExit=exit;
     const cleanup=()=>{
       sheet.remove();
@@ -851,13 +860,6 @@ const app = document.querySelector('#app');
 app.innerHTML = template
   .replace('<!-- editor-diff -->', diffTemplate.replaceAll('DIFF_DETAIL','detailView'))
   .replace('<!-- side-diff -->', diffTemplate.replaceAll('DIFF_DETAIL','rightPreview'));
-app.addEventListener('pointerdown',event=>{
-  const control=event.target.closest('.commandbox, .refresh-button, .layout-actions button, .segment button, .hero-action');
-  if (!control || control.disabled || reducedMotion.matches) return;
-  const rect=control.getBoundingClientRect();
-  control.style.setProperty('--press-x',(event.clientX-rect.left)+'px');
-  control.style.setProperty('--press-y',(event.clientY-rect.top)+'px');
-});
 createIcons({
   root: app,
   inTemplates: true,
@@ -865,7 +867,7 @@ createIcons({
   icons: {
     ArrowDownToLine, ArrowLeft, ArrowUp, ArrowUpFromLine, ArrowUpRight, ChevronLeft, ChevronRight,
     ChevronUp, CircleCheck, Cloud, CornerDownLeft, FileDiff, Files, FileText, FolderGit2, FolderOpen,
-    GitBranch, GitCommitHorizontal, GitCompareArrows, GitGraph, Layers, LayoutDashboard,
+    GitBranch, GitCommitHorizontal, GitCompareArrows, GitGraph, GitPullRequest, History, Layers, LayoutDashboard,
     ListFilter, MessageSquare, Monitor, Moon, PanelLeft, Plus, RefreshCw, Search, Settings,
     Square, SquareTerminal, Sun, Tag, X
   }
