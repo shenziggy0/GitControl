@@ -111,7 +111,7 @@ export function mountGraph(state, Alpine, pageSize) {
       button.dataset.sha=commit.sha;
       button.style.height=h+'px';
       const gutter=Math.max(lane,...edges.map(e=>Math.max(e.from,e.to)));
-      button.style.paddingLeft=(x(gutter)+21)+'px';
+      item.style.setProperty('--graph-gutter',(x(gutter)+21)+'px');
       button.title=commit.subject+' · '+commit.author+' · '+commit.sha;
       button.setAttribute('aria-pressed','false');
       const heading=document.createElement('span');heading.className='row-heading';
@@ -129,20 +129,22 @@ export function mountGraph(state, Alpine, pageSize) {
       item.append(button);
       const refs=refsBySha.get(commit.sha);
       if (refs) {
-        const labels=document.createElement('span');labels.className='row-pointers';
+        const referenceButton=document.createElement('button');
+        referenceButton.type='button';
+        referenceButton.className='row-pointers';
+        referenceButton.setAttribute('aria-label','查看 '+refs.length+' 个完整引用');
+        referenceButton.setAttribute('aria-haspopup','dialog');
+        referenceButton.onclick=()=>showRefs(refs,referenceButton);
+
+        const labels=document.createElement('span');
+        labels.className='ref-preview';
+        labels.setAttribute('aria-hidden','true');
         for (const ref of refs.slice(0,inlineRefs)) labels.append(refBadge(ref));
-        button.append(labels);
-        if (refs.length>inlineRefs) {
-          item.classList.add('has-more-refs');
-          const more=document.createElement('button');
-          more.type='button';
-          more.className='more-refs';
-          more.textContent='另有 '+(refs.length-inlineRefs)+' 个';
-          more.setAttribute('aria-label','查看全部 '+refs.length+' 个引用');
-          more.setAttribute('aria-haspopup','dialog');
-          more.onclick=()=>showRefs(refs,more);
-          item.append(more);
-        }
+        const action=document.createElement('span');
+        action.className='ref-action';
+        action.textContent='查看 '+refs.length+' 个引用';
+        referenceButton.append(labels,action);
+        item.append(referenceButton);
       }
       body.append(item);y+=h;
     }
