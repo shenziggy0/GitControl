@@ -51,6 +51,9 @@ function refBadge(ref) {
 
 export function mountGraph(state, Alpine, pageSize) {
   const list=document.getElementById('history-list');
+  const refDialog=document.getElementById('graph-refs');
+  const refList=refDialog.querySelector('ul');
+  const inlineRefs=2;
   let refsBySha = new Map();
   const height = row => refsBySha.has(row.commit.sha) ? 82 : 58;
   const nodeOffset = 20;
@@ -58,6 +61,23 @@ export function mountGraph(state, Alpine, pageSize) {
   let layoutKey = '';
   let rows = [];
   let renderedPage='';
+  let refTrigger;
+  refDialog.addEventListener('close',()=>{
+    refTrigger?.focus({preventScroll:true});
+    refTrigger=null;
+  });
+  function showRefs(refs, trigger) {
+    const items=document.createDocumentFragment();
+    for (const ref of refs) {
+      const item=document.createElement('li');
+      item.append(refBadge(ref));
+      items.append(item);
+    }
+    refList.replaceChildren(items);
+    refTrigger=trigger;
+    refDialog.showModal();
+    refList.scrollTop=0;
+  }
   function draw(page) {
     const start=page*pageSize;
     const visible=rows.slice(start,start+pageSize);
@@ -83,9 +103,11 @@ export function mountGraph(state, Alpine, pageSize) {
       const style=isHead?'head-node':merge?'merge-node':row.main?'node':'side-node';
       nodes.push(graphElement('circle',{cx:x(lane),cy:at,r:isHead?5:merge?4.5:3.5,class:style}));
       if (merge) nodes.push(graphElement('circle',{cx:x(lane),cy:at,r:1.6,class:'merge-core'}));
+      const item=document.createElement('div');
+      item.className='graph-row-item';
       const button=document.createElement('button');
       button.type='button';
-      button.className='graph-row'+(refsBySha.has(commit.sha)?' with-refs':'');
+      button.className='graph-row';
       button.dataset.sha=commit.sha;
       button.style.height=h+'px';
       const gutter=Math.max(lane,...edges.map(e=>Math.max(e.from,e.to)));
@@ -103,13 +125,26 @@ export function mountGraph(state, Alpine, pageSize) {
       author.className='author';author.textContent=commit.author;
       meta.append(hash,author);
       button.append(heading,meta);
-      if (refsBySha.has(commit.sha)) {
-        const labels=document.createElement('span');labels.className='row-pointers';
-        for (const ref of refsBySha.get(commit.sha)) labels.append(refBadge(ref));
-        button.append(labels);
-      }
       button.onclick=()=>state.inspect(commit,state.paneOrigin('history',commit.sha));
-      body.append(button);y+=h;
+      item.append(button);
+      const refs=refsBySha.get(commit.sha);
+      if (refs) {
+        const labels=document.createElement('span');labels.className='row-pointers';
+        for (const ref of refs.slice(0,inlineRefs)) labels.append(refBadge(ref));
+        button.append(labels);
+        if (refs.length>inlineRefs) {
+          item.classList.add('has-more-refs');
+          const more=document.createElement('button');
+          more.type='button';
+          more.className='more-refs';
+          more.textContent='另有 '+(refs.length-inlineRefs)+' 个';
+          more.setAttribute('aria-label','查看全部 '+refs.length+' 个引用');
+          more.setAttribute('aria-haspopup','dialog');
+          more.onclick=()=>showRefs(refs,more);
+          item.append(more);
+        }
+      }
+      body.append(item);y+=h;
     }
     svg.append(...nodes);
     svg.style.width=(x(maxLane)+9)+'px';svg.style.height=y+'px';
@@ -117,19 +152,23 @@ export function mountGraph(state, Alpine, pageSize) {
     list.replaceChildren(body);list.scrollTop=0;
   }
   Alpine.effect(()=>{
-    const layout = [state.projectId,state.s.revision,state.s.scope,state.s.repo?.head].join('|');
+    const refs=state.refs;
+    const scope=state.s.scope;
+    const layout = [state.projectId,state.s.revision,scope,state.historyTip,state.s.repo?.head,state.active].join('|');
     if (layout !== layoutKey) {
       rows = historyLayout(state.history,state.s.repo?.head);
       layoutKey = layout;
+      const lastPage=Math.max(0,Math.ceil(rows.length/pageSize)-1);
+      if (state.s.page>lastPage) state.s.page=lastPage;
     }
     const tags = (state.s.repo?.tags||[]).filter(tag=>tag.oid).map(tag=>({...tag,kind:'tag'}));
-    const refs = [...state.refs,...tags];
-    const key = [layout,state.s.page,JSON.stringify(refs.map(r=>[r.kind,r.name,r.oid]))].join('|');
+    const labels = [...refs,...tags];
+    const key = [layout,state.s.page,JSON.stringify(labels.map(r=>[r.kind,r.name,r.oid]))].join('|');
     if(key!==renderedPage){
       const previous = list.scrollTop;
       const samePage = renderedPage.startsWith([layout,state.s.page].join('|')+'|');
       refsBySha = new Map();
-      for (const ref of refs) {
+      for (const ref of labels) {
         if (!refsBySha.has(ref.oid)) refsBySha.set(ref.oid, []);
         refsBySha.get(ref.oid).push(ref);
       }
@@ -139,7 +178,7 @@ export function mountGraph(state, Alpine, pageSize) {
     }
     const sha=state.s.focusSha;
     void state.s.focusSerial;
-    for(const b of list.querySelectorAll('button')) b.setAttribute('aria-pressed',String(b.dataset.sha===sha));
+    for(const b of list.querySelectorAll('.graph-row')) b.setAttribute('aria-pressed',String(b.dataset.sha===sha));
     const node=sha&&list.querySelector('[data-sha="'+CSS.escape(sha)+'"]');
     if(node)node.scrollIntoView({block:'nearest',inline:'nearest'});
   });

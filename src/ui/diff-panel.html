@@ -1,0 +1,37 @@
+<div class="diff-panel" x-show="DIFF_DETAIL">
+  <div class="diff-head">
+    <div><h2 x-text="DIFF_DETAIL?.title"></h2><p class="authorline" x-text="DIFF_DETAIL?.label"></p></div>
+    <div class="inline-actions">
+      <button class="prompt" x-show="DIFF_DETAIL?.patch" @click="DIFF_DETAIL.raw=!DIFF_DETAIL.raw" x-text="DIFF_DETAIL?.raw?'易读差异':'原始补丁'"></button>
+      <button class="prompt" x-show="!!rightPreview && DIFF_DETAIL===rightPreview" @click="s.rightDiff=null">提交图</button>
+    </div>
+  </div>
+  <div class="inline-actions diff-actions" x-show="DIFF_DETAIL?.file&&!DIFF_DETAIL?.oid">
+    <button class="prompt" :disabled="s.commitBusy||!currentPatchChange(DIFF_DETAIL)||DIFF_DETAIL?.file.group==='conflict'"
+      @click="toggleFile(currentPatchChange(DIFF_DETAIL))" x-text="DIFF_DETAIL?.file&&isSelected(DIFF_DETAIL.file)?'移出本次提交':'加入本次提交'"></button>
+    <button class="prompt" x-show="hasNextDiff(DIFF_DETAIL)" @click="nextDiff(DIFF_DETAIL)">下一个文件</button>
+  </div>
+  <p class="authorline" role="status" x-show="DIFF_DETAIL?.pending||DIFF_DETAIL?.error" x-text="DIFF_DETAIL?.error||'正在读取差异…'"></p>
+  <p class="authorline" x-show="DIFF_DETAIL?.patch?.truncated">仅显示部分内容</p>
+  <template x-if="DIFF_DETAIL?.patch">
+    <div class="preview-stack">
+      <pre class="patch raw-preview" x-show="DIFF_DETAIL.raw || !DIFF_DETAIL.patch.lines.length" x-text="DIFF_DETAIL.patch.raw||'没有可显示的文本差异。'"></pre>
+      <div class="patch readable-diff" x-show="!DIFF_DETAIL.raw && DIFF_DETAIL.patch.lines.length">
+        <template x-for="(line,index) in DIFF_DETAIL.patch.lines" :key="index">
+          <div class="diff-row" :data-kind="line.kind">
+            <button class="line-number" :disabled="line.old==null||DIFF_DETAIL?.file.group==='conflict'" :aria-label="'查看旧版第 '+line.old+' 行的来源'" @click="lookupLine(DIFF_DETAIL,line,true)" x-text="line.old??''"></button>
+            <button class="line-number" :disabled="line.new==null||DIFF_DETAIL?.file.group==='conflict'" :aria-label="'查看新版第 '+line.new+' 行的来源'" @click="lookupLine(DIFF_DETAIL,line,false)" x-text="line.new??''"></button>
+            <code x-text="line.text||' '"></code>
+          </div>
+        </template>
+      </div>
+    </div>
+  </template>
+  <div class="line-origin" x-show="DIFF_DETAIL?.lookup">
+    <p role="status" x-text="DIFF_DETAIL?.lookup?.pending?'正在查询来源…':DIFF_DETAIL?.lookup?.error||(DIFF_DETAIL?.lookup?.value?DIFF_DETAIL.lookup.value.path+' · 第 '+DIFF_DETAIL.lookup.value.line+' 行':'该行尚未提交')"></p>
+    <div class="inline-actions" x-show="DIFF_DETAIL?.lookup?.value">
+      <button class="prompt" @click="inspect(DIFF_DETAIL.lookup.value.commit)" x-text="DIFF_DETAIL?.lookup?.value?.commit.subject"></button>
+    </div>
+    <button class="prompt" :disabled="!!s.running" x-show="DIFF_DETAIL?.lookup&&!DIFF_DETAIL?.lookup.pending&&!DIFF_DETAIL?.lookup.error" @click="explainLine(DIFF_DETAIL)">用 Claude 解释这一行</button>
+  </div>
+</div>

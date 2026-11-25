@@ -9,6 +9,8 @@ import {
   Plus, RefreshCw, Search, Settings, Square, SquareTerminal, Sun, Tag, X
 } from 'lucide';
 import template from './workspace.html?raw';
+import diffTemplate from './diff-panel.html?raw';
+import { workbench, workbenchSession } from './workbench.js';
 import { mountGraph } from './graph.js';
 import { showTerminal, closeTerminal, updateTerminalAppearance } from './terminal.js';
 import './style.css';
@@ -30,10 +32,21 @@ const groups = [
 function session() {
   return {
     view:'status', detailTrail:[], statusScroll:0, chat:false, chatOrigin:null, chatCommit:null, term:false, messages:[], draft:'', running:null, selected:[],
-    repo:null, discovery:null, childrenOpen:true, remotes:{}, counts:{}, error:'', refreshing:false, refreshingRemote:false, dirty:false,
+    repo:null, discovery:null, childrenOpen:true, remotes:{}, counts:{}, error:'', refreshing:false, refreshingRemote:false, dirty:false, remoteDirty:false,
     all:[], revision:0, graphBusy:false, historyKey:null, headFiles:null, headFilesError:false, headFilesOpen:false,
-    scope:'all', page:0, focusSha:null, focusSerial:0
+    scope:'all', page:0, focusSha:null, focusSerial:0,
+    ...workbenchSession()
   };
+}
+
+// A successful terminal push normally moves a local remote-tracking ref.
+// Use that change to request fresh server data for the cloud labels.
+function remoteStateChanged(previous, current) {
+  if (previous?.kind!=='git') return true;
+  return current.remotes.length!==previous.remotes.length ||
+    current.remotes.some((name,i)=>name!==previous.remotes[i]) ||
+    current.tracking.length!==previous.tracking.length ||
+    current.tracking.some(({name,oid},i)=>name!==previous.tracking[i].name || oid!==previous.tracking[i].oid);
 }
 
 function branchPairs(s) {
@@ -54,7 +67,7 @@ function branchPairs(s) {
   return rows;
 }
 
-Alpine.data('workspace',()=>({
+Alpine.data('workspace',()=>Object.defineProperties({
   projects:[], sessions:{}, projectId:null, empty:session(), sidebar:true, projectsOpen:true,
   branchesOpen:true, remotesOpen:false, tagsOpen:false, palette:false, query:'', notice:'',
   pane:'editor', appearance:'system', selectedSearchKey:null, loadingProjects:isTauri(), claudeExecutable:null,
@@ -138,13 +151,18 @@ Alpine.data('workspace',()=>({
     const head=this.s.repo?.head;
     return head ? '当前工作位置 · 分离 HEAD '+this.short(head) : '当前仓库尚无提交';
   },
+  get historyTip(){
+    if (this.s.scope==='all') return null;
+    const tip=this.refs.find(r=>r.kind+'/'+r.name===this.s.scope);
+    return tip?.available===false ? null : tip?.oid;
+  },
   get history(){
     if (!this.active) return [];
     if (this.s.scope==='all') return this.s.all;
-    const tip=this.refs.find(r=>r.kind+'/'+r.name===this.s.scope);
-    if (!tip || tip.available===false) return [];
+    const tip=this.historyTip;
+    if (!tip) return [];
     const byId = new Map(this.s.all.map(c=>[c.sha,c]));
-    const seen = new Set(), pending = [tip.oid];
+    const seen = new Set(), pending = [tip];
     while(pending.length){
       const oid = pending.pop();
       if (seen.has(oid)) continue;
@@ -166,6 +184,7 @@ Alpine.data('workspace',()=>({
     for (const project of this.projects) {
       if (include({key:'project/'+project.id,label:project.name,kind:'项目',project:project.id})) return hits;
     }
+    if (this.searchScope==='all') return hits.concat(this.crossHits).slice(0,12);
     for (const ref of this.refs) {
       if (include({key:ref.kind+'/'+ref.name,label:ref.name,kind:ref.kind==='local'?'本地':'云端',ref})) return hits;
     }
@@ -196,10 +215,24 @@ Alpine.data('workspace',()=>({
     reducedMotion.addEventListener('change',()=>updateTerminalAppearance());
     if (isTauri() && /Mac/.test(navigator.platform)) document.documentElement.classList.add('native-mac');
     mountGraph(this,Alpine,PAGE_SIZE);
+    compactLayout.addEventListener('change', event => {
+      const right = this.s.rightDiff;
+      this.compactWorkbench = event.matches;
+      if (event.matches && right && this.s.view==='status') {
+        this.s.rightDiff = null;
+        const detail = this.openDetail(right);
+        if (detail?.pending) this.loadDiff(detail);
+      }
+    });
     if (!isTauri()) return;
     try {
       await listen('workspace-changed',({payload})=>{if(payload===this.projectId)this.refresh(payload,false)});
-      window.addEventListener('focus',()=>{if(this.projectId)this.refresh(this.projectId,false)});
+      window.addEventListener('focus',()=>{
+        if (!this.projectId) return;
+        this.refresh(this.projectId,false);
+        const repositories=this.s.discovery?.result?.repositories;
+        if (repositories) this.refreshSummaries(this.projectId,repositories);
+      });
       const config=await invoke('project_list');
       this.projects=config.projects;
       this.claudeExecutable=config.claudePath;
@@ -276,8 +309,8 @@ Alpine.data('workspace',()=>({
     }
     this.$nextTick(()=>this.syncTerminal(focusTerminal));
     selectionQueue=selectionQueue.then(()=>invoke('project_select',{projectId:id})).catch(error=>this.report(error));
-    await this.refresh(id,true);
     await selectionQueue;
+    if (this.projectId===id) await this.refresh(id,true);
   },
   async scanChildren(id){
     const s=this.sessions[id];
@@ -287,12 +320,15 @@ Alpine.data('workspace',()=>({
     const request=s.discovery;
     try {
       const result=await invoke('project_scan_children',{parentProjectId:id});
-      if (this.sessions[id]===s&&s.discovery===request) s.discovery={busy:false,result,error:''};
+      if (this.sessions[id]===s&&s.discovery===request) {
+        s.discovery={busy:false,result,error:''};
+        this.refreshSummaries(id,result.repositories);
+      }
     } catch(error) {
       if (this.sessions[id]===s&&s.discovery===request) s.discovery={busy:false,result:null,error:String(error)};
     }
   },
-  async openChild(parentId,relativePath){
+  async openChild(parentId,relativePath,after){
     if (this.openingChild) return;
     this.openingChild=true;
     this.notice='';
@@ -302,7 +338,10 @@ Alpine.data('workspace',()=>({
     try {
       const project=await invoke('project_open_child',{parentProjectId:parentId,relativePath});
       this.rememberProject(project);
-      if (this.selectionVersion===version) await this.selectProject(project.id);
+      if (this.selectionVersion===version) {
+        await this.selectProject(project.id);
+        if (this.selectionVersion===version+1 && this.projectId===project.id && this.active) after?.();
+      }
     } catch(error) {
       if (this.selectionVersion===version) {
         if (this.projectId===parentId&&parent) parent.childOpenError=String(error);
@@ -334,8 +373,12 @@ Alpine.data('workspace',()=>({
     try{
       repository=await invoke('repo_status',{projectId:id});
       if (this.sessions[id]!==s) return;
+      if (repository.kind==='git' && remoteStateChanged(s.repo,repository)) network=true;
+      const sameVersion=!s.repo || (s.repo.branch===repository.branch && s.repo.head===repository.head);
       s.repo=repository;
-      s.selected=s.selected.filter(old=>repository.files.some(f=>f.group===old.group&&f.path===old.path&&f.stamp===old.stamp));
+      const selected=sameVersion ? s.selected.filter(old=>repository.files.some(f=>f.group===old.group&&f.path===old.path&&f.stamp===old.stamp)) : [];
+      if (!s.commitBusy && selected.length!==s.selected.length) s.commitError='部分已选改动发生变化，请查看差异后重新选择。';
+      s.selected=selected;
       s.error='';
       for (const name of Object.keys(s.remotes)) if (!repository.remotes.includes(name)) delete s.remotes[name];
       if (repository.kind==='folder') {
@@ -344,6 +387,7 @@ Alpine.data('workspace',()=>({
           s.childrenOpen=true;
         }
         if (!s.discovery) this.scanChildren(id);
+        else if (network && s.discovery.result) this.refreshSummaries(id,s.discovery.result.repositories);
       } else {
         s.discovery=null;
       }
@@ -351,32 +395,42 @@ Alpine.data('workspace',()=>({
       this.updateGraph(id);
     } catch(error){s.error=String(error);s.repo=null;s.discovery=null;}
     finally{s.refreshing=false;}
-    if (repository?.kind==='git'&&network&&!s.refreshingRemote) {
-      s.refreshingRemote=true;
-      s.lastCloudCount=repository.remotes.every(name=>s.remotes[name]?.timestamp)
-        ? repository.remotes.reduce((count,name)=>count+s.remotes[name].refs.length,0)
-        : null;
-      const jobs=repository.remotes.map(async name=>{
-        s.remotes[name]={name,refs:[],...s.remotes[name],pending:true};
-        const stillConfigured=()=>this.sessions[id]===s&&s.repo?.remotes.includes(name);
-        const events=new Channel();
-        let finished=false;
-        events.onmessage=remote=>{
-          if (!finished&&stillConfigured()) {
-            s.remotes[name]=remote;
-            this.updateGraph(id);
-          }
-        };
-        try {
-          const remote=await invoke('remote_refresh',{projectId:id,name,events});
-          if (stillConfigured()) s.remotes[name]=remote;
-        } catch(error){
-          if (stillConfigured()) s.remotes[name]={...s.remotes[name],pending:false,error:String(error)};
-        } finally {finished=true;}
-      });
-      Promise.allSettled(jobs).then(()=>{s.refreshingRemote=false;this.updateGraph(id);});
-    }
+    if (repository?.kind==='git'&&network) this.refreshRemotes(id);
     if(s.dirty){const again=s.wantNetwork;s.dirty=false;s.wantNetwork=false;setTimeout(()=>this.refresh(id,!!again),140);}
+  },
+  async refreshRemotes(id){
+    const s=this.sessions[id];
+    if (s.refreshingRemote) {s.remoteDirty=true;return;}
+    s.refreshingRemote=true;
+    try {
+      do {
+        s.remoteDirty=false;
+        const names=s.repo.remotes;
+        s.lastCloudCount=names.every(name=>s.remotes[name]?.timestamp)
+          ? names.reduce((count,name)=>count+s.remotes[name].refs.length,0)
+          : null;
+        await Promise.allSettled(names.map(async name=>{
+          s.remotes[name]={name,refs:[],...s.remotes[name],pending:true};
+          const stillConfigured=()=>this.sessions[id]===s&&s.repo?.remotes.includes(name);
+          const events=new Channel();
+          let finished=false;
+          events.onmessage=remote=>{
+            if (!finished&&stillConfigured()) {
+              s.remotes[name]=remote;
+              this.updateGraph(id);
+            }
+          };
+          try {
+            const remote=await invoke('remote_refresh',{projectId:id,name,events});
+            if (stillConfigured()) s.remotes[name]=remote;
+          } catch(error){
+            if (stillConfigured()) s.remotes[name]={...s.remotes[name],pending:false,error:String(error)};
+          } finally {finished=true;}
+        }));
+        if (this.sessions[id]!==s) return;
+        this.updateGraph(id);
+      } while (s.remoteDirty && s.repo?.kind==='git');
+    } finally {s.refreshingRemote=false;}
   },
   async updateGraph(id){
     const s=this.sessions[id], repo=s?.repo;
@@ -434,7 +488,7 @@ Alpine.data('workspace',()=>({
     }
   },
   isSelected(file){return this.s.selected.some(f=>f.path===file.path&&f.group===file.group);},
-  toggleFile(file){this.s.selected=this.isSelected(file)?this.s.selected.filter(f=>f.path!==file.path||f.group!==file.group):this.s.selected.concat(file);},
+  toggleFile(file){if(this.s.commitBusy||file.group==='conflict')return;this.s.selected=this.isSelected(file)?this.s.selected.filter(f=>f.path!==file.path||f.group!==file.group):this.s.selected.concat(file);},
   scopeChanged(){this.s.page=0;this.s.focusSha=null;},
   turnPage(amount){this.s.page=Math.max(0,Math.min(this.pageCount-1,this.s.page+amount));this.s.focusSha=null;},
   locate(oid,reveal=false){
@@ -576,7 +630,7 @@ Alpine.data('workspace',()=>({
     if (!commit) return;
     const id = this.projectId;
     const detail = this.openDetail({view:'commit', key:'commit/'+commit.sha, title:this.short(commit.sha), commit, files:null, error:''},origin);
-    this.locate(commit.sha);
+    if (this.s.all.some(item=>item.sha===commit.sha)) this.locate(commit.sha);
     if (!detail) return;
     try {
       detail.files = await invoke('repo_detail',{projectId:id,oid:commit.sha});
@@ -597,17 +651,17 @@ Alpine.data('workspace',()=>({
     catch(error){this.report(error);}
   },
   async viewPatch(file,oid){
-    const id = this.projectId;
-    const key = JSON.stringify([oid, file.group, file.path]);
+    const key = JSON.stringify([oid, file.group, file.path, file.stamp]);
     const label = oid ? this.short(oid) : groups.find(group => group.id === file.group)?.label;
-    const detail = this.openDetail({view:'diff', key, title:file.path, label, lines:['正在读取…']});
-    if (!detail) return;
-    try {
-      const patch = await invoke('repo_patch',{projectId:id,oid,path:file.path,group:file.group||''});
-      detail.lines = patch ? patch.split('\n') : ['没有可显示的文本差异。'];
-    } catch(error) {
-      detail.lines = [String(error)];
+    const next = {view:'diff', key, title:file.path, label, file:{...file}, oid:oid??null,
+      head:this.s.repo?.head??null, pending:true, patch:null, error:'', raw:false, lookup:null};
+    if (!oid && !this.compactWorkbench && this.s.view==='status') {
+      this.s.rightDiff=next;
+      await this.loadDiff(this.s.rightDiff);
+      return;
     }
+    const detail=this.openDetail(next);
+    if (detail) await this.loadDiff(detail);
   },
   openSearch(trigger){
     if (this.$refs.settingsDialog.open) return;
@@ -617,6 +671,10 @@ Alpine.data('workspace',()=>({
     if (!this.palette) {
       searchTrigger=trigger||document.activeElement;
       this.query='';
+      this.searchScope='project';
+      this.crossHits=[];
+      this.crossBusy=false;
+      this.crossFailures=0;
       this.selectedSearchKey=null;
       this.palette=true;
       const anchor=(trigger||this.$refs.launch).getBoundingClientRect();
@@ -684,6 +742,7 @@ Alpine.data('workspace',()=>({
     const anchor=pane==='history' ? trigger?.closest('.graph-row')?.dataset.sha : trigger?.dataset.branchKey;
     const origin=this.paneOrigin(pane,anchor);
     this.closeSearch(false);
+    if(hit.repository){this.openCrossHit(hit);return;}
     if(hit.project)this.selectProject(hit.project,false);
     if(hit.commit)this.inspect(hit.commit,origin);
     if(hit.ref)this.branchView(hit.ref,hit.ref.kind==='remote',origin);
@@ -765,7 +824,7 @@ Alpine.data('workspace',()=>({
     finally {this.savingPath=false;}
   },
   scrollChat(){this.$nextTick(()=>{const area=this.$refs.messages;if(area)area.scrollTop=area.scrollHeight;});},
-  async ask(question){
+  async ask(question,purpose=null){
     const text=question.trim(), id=this.projectId, s=this.s;
     if(!text||!id||s.running)return;
     const requestId=crypto.randomUUID(), events=new Channel();
@@ -781,15 +840,17 @@ Alpine.data('workspace',()=>({
       }
       if(this.projectId===id)this.scrollChat();
     };
-    try {await invoke('agent_send',{projectId:id,requestId,question:text,selected:s.selected,commitOid:s.chatCommit,events});}
+    try {await invoke('agent_send',{projectId:id,requestId,question:text,selected:s.selected,commitOid:s.chatCommit,purpose,events});}
     catch(error){answer.text+= (answer.text?'\n':'')+String(error);}
     finally{s.running=null;if(this.projectId===id)this.scrollChat();}
   },
   async cancel(){if(this.s.running)try{await invoke('agent_cancel',{projectId:this.projectId,requestId:this.s.running});}catch(error){this.report(error);}}
-}));
+}, Object.getOwnPropertyDescriptors(workbench(compactLayout))));
 
 const app = document.querySelector('#app');
-app.innerHTML = template;
+app.innerHTML = template
+  .replace('<!-- editor-diff -->', diffTemplate.replaceAll('DIFF_DETAIL','detailView'))
+  .replace('<!-- side-diff -->', diffTemplate.replaceAll('DIFF_DETAIL','rightPreview'));
 app.addEventListener('pointerdown',event=>{
   const control=event.target.closest('.commandbox, .refresh-button, .layout-actions button, .segment button, .hero-action');
   if (!control || control.disabled || reducedMotion.matches) return;

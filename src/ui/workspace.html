@@ -51,8 +51,15 @@
         </div>
       </template>
     </div>
-    <button class="group" @click="tagsOpen=!tagsOpen" :aria-expanded="tagsOpen">标签 <small x-text="s.repo?.tags.length"></small><i data-lucide="chevron-right"></i></button>
-    <div x-show="tagsOpen"><template x-for="tag in s.repo?.tags||[]" :key="tag.name"><button class="tree" :disabled="!tag.oid||s.graphBusy" :title="!tag.oid?'此标签未指向提交':s.graphBusy?'正在读取提交历史…':tag.name" @click="locate(tag.oid,true)"><i data-lucide="tag"></i><span x-text="tag.name"></span></button></template></div></div>
+    <button class="group" @click="tagsOpen=!tagsOpen" :aria-expanded="tagsOpen">标签 <small x-text="s.repo?.tags_error?'读取失败':s.repo?.tags.length"></small><i data-lucide="chevron-right"></i></button>
+    <template x-if="tagsOpen"><div>
+      <p class="remote-proof sidebar-remote" x-show="s.repo?.tags_error" :title="s.repo?.tags_error" role="status">无法读取标签，请刷新后重试。</p>
+      <template x-for="tag in s.repo?.tags||[]" :key="tag.name">
+        <button class="tree" :disabled="!tag.oid||s.graphBusy" :title="tag.unavailable?'标签对象不可用':!tag.oid?'此标签未指向提交':s.graphBusy?'正在读取提交历史…':tag.name" @click="locate(tag.oid,true)">
+          <i data-lucide="tag"></i><span x-text="tag.name"></span><small x-show="tag.unavailable">对象不可用</small>
+        </button>
+      </template>
+    </div></template></div>
     </div>
     <div class="sidefoot">
       <span id="appearance-label">外观</span>
@@ -67,9 +74,12 @@
   <main class="editor" x-ref="editor" tabindex="-1">
     <div class="page-bar">
       <h1 x-text="s.view==='status' ? '工作台' : s.view==='chat' ? 'Claude 对话' : s.view==='diff' ? '文件差异' : s.view==='branch' ? '分支详情' : '提交详情'"></h1>
+      <div class="inline-actions" x-show="active&&s.view==='status'">
+      <button class="prompt" :disabled="!!(s.snapshots?.busy)" :aria-expanded="!!s.snapshots" @click="s.snapshots?s.snapshots=null:showSnapshots()">工作树快照</button>
       <button class="refresh-button glass" x-show="active&&s.view==='status'" @click="refresh(projectId,true)" :disabled="s.refreshing" :aria-busy="s.refreshing||s.refreshingRemote" aria-label="刷新分支状态">
         <i data-lucide="refresh-cw"></i><span x-text="s.refreshing||s.refreshingRemote?'刷新中':'刷新'"></span>
       </button>
+      </div>
     </div>
     <nav class="tabs" aria-label="编辑器标签" x-show="detailView||s.chat">
       <button @click="showStatus()" :aria-pressed="s.view==='status'"><i data-lucide="layout-dashboard"></i>工作台</button>
@@ -91,7 +101,7 @@
     </div>
     <div class="buffer" data-view="status" :hidden="s.view!=='status'">
       <div x-show="active">
-        <section class="branch-summary panorama">
+        <section class="branch-summary">
           <div class="panorama-content">
             <div class="hero-label"><i data-lucide="git-branch"></i>当前分支</div>
             <h2 x-text="s.repo?.branch||(s.repo?.head?'分离 HEAD':'尚无提交')"></h2>
@@ -103,18 +113,84 @@
         </section>
         <dl class="facts">
           <div class="fact-files"><dt><i data-lucide="files"></i>改动文件</dt><dd x-text="fileCount"></dd></div>
-          <div class="fact-push"><dt><i data-lucide="arrow-up-from-line"></i>待推送</dt><dd x-text="current?.counts?.[0]??'—'"></dd></div>
-          <div class="fact-pull"><dt><i data-lucide="arrow-down-to-line"></i>待拉取</dt><dd x-text="current?.counts?.[1]??'—'"></dd></div>
+          <div x-show="syncStatus" class="sync-state"><dt>远端状态</dt><dd x-text="syncStatus"></dd></div>
+          <div class="fact-push" x-show="!syncStatus"><dt><i data-lucide="arrow-up-from-line"></i>待推送</dt><dd><button class="fact-control" @click="openSync(true)" :aria-label="'查看 '+current?.counts?.[0]+' 次待推送提交'" x-text="current?.counts?.[0]"></button></dd></div>
+          <div class="fact-pull" x-show="!syncStatus"><dt><i data-lucide="arrow-down-to-line"></i>待拉取</dt><dd><button class="fact-control" @click="openSync(false)" :aria-label="'查看 '+current?.counts?.[1]+' 次待拉取提交'" x-text="current?.counts?.[1]"></button></dd></div>
         </dl>
-        <section class="change"><div class="caption"><h2><i data-lucide="file-diff"></i>工作区更改</h2><span class="count" x-text="s.selected.length?'已选 '+s.selected.length+' 项':fileCount+' 个文件'"></span></div>
+        <section class="change" x-ref="changes" tabindex="-1"><div class="caption"><h2><i data-lucide="file-diff"></i>工作区更改</h2><span class="count" x-text="s.selected.length?'已选 '+selectedText:fileCount+' 个文件'"></span></div>
           <p class="clean-state" x-show="!fileCount"><i data-lucide="circle-check"></i>工作区干净</p>
           <template x-for="group in changeGroups" :key="group.id"><div x-show="group.files.length" class="change-group">
             <h3 x-text="group.label+' · '+group.files.length"></h3>
             <template x-for="file in group.files" :key="file.path"><div class="filerow">
-              <label class="file-choice"><input type="checkbox" :disabled="group.id==='conflict'" :checked="isSelected(file)" :aria-label="'选择 '+group.label+' '+file.path" @change="toggleFile(file)"></label>
+              <label class="file-choice"><input type="checkbox" :disabled="s.commitBusy||group.id==='conflict'" :checked="isSelected(file)" :aria-label="'选择 '+group.label+' '+file.path" @change="toggleFile(file)"></label>
               <span class="change-code" :data-code="file.code" x-text="file.code"></span><button class="file-link" @click="viewPatch(file,null)" x-text="file.old?file.old+' → '+file.path:file.path"></button>
             </div></template>
           </div></template>
+          <form class="commit-form" @submit.prevent="submitSelected()" x-show="s.selected.length||s.commitDraft">
+            <label for="commit-message">提交说明</label>
+            <input id="commit-message" x-model="s.commitDraft" :disabled="s.commitBusy" placeholder="用中文写一句这次改了什么">
+            <div class="inline-actions">
+              <button class="primary" type="submit" :disabled="s.commitBusy||s.commitUncertain||!s.selected.length||!s.commitDraft.trim()" x-text="s.commitBusy?'正在提交…':'提交 '+selectedText"></button>
+              <button class="prompt" type="button" @click="suggestCommitMessage()" :disabled="s.commitBusy||!!s.running||!s.selected.length">用 Claude 生成说明</button>
+              <button class="prompt" type="button" x-show="s.running" @click="cancel()">停止生成</button>
+            </div>
+          </form>
+          <p role="alert" class="workbench-error" x-show="s.commitError" x-text="s.commitError"></p>
+          <p role="status" x-show="s.lastCommit">已提交 <button class="sha-link" @click="openCommitOid(s.lastCommit)" x-text="short(s.lastCommit)"></button></p>
+          <button class="prompt" x-show="s.commitUncertain" @click="recheckCommit()">重新核对历史</button>
+        </section>
+        <section class="compare workbench-panel" x-show="s.sync" x-ref="syncPanel" aria-label="同步详情">
+          <div class="caption"><h2 x-text="s.sync?.pushing?'待推送提交':'待拉取提交'"></h2><button class="prompt" :disabled="!!(s.sync?.busy)" @click="s.sync=null">关闭</button></div>
+          <p class="authorline" role="status" x-show="s.sync?.pending||s.sync?.success" x-text="s.sync?.success||'正在核对实际远端…'"></p>
+          <p class="authorline workbench-error" role="alert" x-show="s.sync?.error" x-text="s.sync?.error"></p>
+          <template x-if="s.sync?.result">
+            <div class="sync-preview">
+              <p class="authorline" x-text="s.sync.result.preview.branch+' → '+s.sync.result.preview.remoteRef.replace('refs/heads/','')+' · '+s.sync.result.preview.target"></p>
+              <p class="authorline" x-text="'已核对 '+shortDate(s.sync.result.preview.timestamp)+' · '+s.sync.result.preview.total+' 次提交'"></p>
+              <ul class="workbench-list">
+                <template x-for="commit in s.sync.result.preview.commits" :key="commit.sha"><li><button class="file-link" @click="inspect(commit)" x-text="short(commit.sha)+' '+commit.subject"></button></li></template>
+              </ul>
+              <button class="primary" x-show="s.sync.result.preview.canPush" :disabled="s.sync.busy" @click="sendPush()" x-text="s.sync.busy?'推送并核对中…':'确认推送这 '+s.sync.result.preview.total+' 次提交'"></button>
+            </div>
+          </template>
+          <button class="prompt" x-show="s.sync?.error&&!s.sync?.busy" @click="openSync(s.sync.pushing)">重新核对</button>
+        </section>
+        <section class="compare workbench-panel" x-show="s.snapshots" x-ref="snapshotPanel" aria-label="工作树快照">
+          <div class="caption"><h2>工作树快照</h2><button class="prompt" :disabled="!!(s.snapshots?.busy)" @click="s.snapshots=null">关闭</button></div>
+          <form class="snapshot-form" @submit.prevent="createSnapshot()">
+            <input x-model="s.snapshotName" aria-label="快照名称" placeholder="快照名称（可选）" maxlength="80">
+            <button class="primary" :disabled="!!(s.snapshots?.busy)" type="submit" x-text="s.snapshots?.busy?'处理中…':'记住现在'"></button>
+          </form>
+          <p class="authorline" role="status" x-text="s.snapshots?.items ? bytesLabel(s.snapshots.items.bytes)+' / '+bytesLabel(s.snapshots.items.limit) : '正在读取快照…'"></p>
+          <p class="authorline workbench-error" role="alert" x-show="s.snapshots?.error" x-text="s.snapshots?.error"></p>
+          <ul class="workbench-list">
+            <template x-for="item in s.snapshots?.items?.items||[]" :key="item.id">
+              <li><button class="prompt" :disabled="!!(s.snapshots?.busy)" @click="chooseSnapshot(item)" x-text="(item.name||(item.undo?'恢复前的版本':'工作树快照'))+' · '+shortDate(item.timestamp)"></button></li>
+            </template>
+          </ul>
+          <template x-if="s.snapshots?.target">
+            <div class="snapshot-differences">
+              <div class="caption"><h3 x-text="s.snapshots.target.name||'快照差异'"></h3>
+                <button class="prompt" :disabled="s.snapshots.busy" @click="s.snapshots.confirmDelete=!s.snapshots.confirmDelete">删除快照</button>
+              </div>
+              <button class="prompt workbench-error" x-show="s.snapshots.confirmDelete" :disabled="s.snapshots.busy" @click="deleteSnapshot()">确认删除这份快照</button>
+              <p class="authorline" x-show="!s.snapshots.rows?.length">工作树内容与这份快照一致</p>
+              <ul class="workbench-list">
+                <template x-for="row in s.snapshots.rows||[]" :key="row.path"><li><button class="file-link" :disabled="s.snapshots.busy" @click="previewSnapshotFile(row)" x-text="row.path"></button></li></template>
+              </ul>
+              <template x-if="s.snapshots.file">
+                <div class="snapshot-file">
+                  <p x-text="s.snapshots.selected.path"></p>
+                  <div class="snapshot-versions">
+                    <div><h4>现在的工作树</h4><pre x-text="s.snapshots.file.before??'文件不存在'"></pre></div>
+                    <div><h4>恢复后的版本</h4><pre x-text="s.snapshots.file.after??'恢复会移走该文件'"></pre></div>
+                  </div>
+                  <button class="primary" :disabled="s.snapshots.busy" @click="restoreSnapshotFile()" x-text="s.snapshots.target.undo?'撤回上次恢复':s.snapshots.file.kind==='remove'?'恢复为不存在':'恢复此文件'"></button>
+                </div>
+              </template>
+              <p role="status" x-show="s.snapshots.undo"><button class="prompt" :disabled="s.snapshots.busy" @click="chooseSnapshot(s.snapshots.undo)">已恢复 · 查看撤回版本</button></p>
+            </div>
+          </template>
         </section>
         <section class="compare"><div class="caption"><h2><i data-lucide="git-compare-arrows"></i>分支位置</h2><span>点击提交号定位</span></div>
           <table><thead><tr><th scope="col">分支</th><th scope="col">本地</th><th scope="col">云端</th></tr></thead><tbody>
@@ -155,14 +231,21 @@
         </section>
         <section class="folder-discovery" x-show="s.repo?.kind==='folder'&&!s.error">
           <div class="caption"><h2><i data-lucide="folder-open"></i>子仓库</h2></div><div class="inline-actions">
-            <button class="prompt" @click="scanChildren(projectId)" :disabled="s.discovery?.busy">重新扫描</button>
+            <button class="prompt" @click="scanChildren(projectId)" :disabled="!!(s.discovery?.busy)">重新扫描</button>
             <button class="prompt" @click="addProject()">选择其他目录</button>
             <button class="prompt" @click="openProjectTerminal()">在此目录打开终端</button>
           </div>
           <p class="child-error" role="alert" x-show="s.childOpenError" x-text="s.childOpenError"></p>
           <div class="child-results" x-show="s.discovery?.result?.repositories.length" aria-label="发现的子仓库">
-            <template x-for="child in s.discovery?.result?.repositories||[]" :key="child.relativePath">
-              <button class="tree" @click="openChild(projectId,child.relativePath)" :disabled="openingChild" :title="child.relativePath"><i data-lucide="folder-git-2"></i><span x-text="child.relativePath"></span></button>
+            <template x-for="child in childrenWithSummary" :key="child.relativePath">
+              <div class="child-summary">
+                <button class="tree" @click="openChild(projectId,child.relativePath)" :disabled="openingChild" :title="child.relativePath"><i data-lucide="folder-git-2"></i><span x-text="child.relativePath"></span></button>
+                <p class="authorline" x-text="summaryText(s.summaries[child.relativePath])" :title="s.summaries[child.relativePath]?.error"></p>
+                <div class="inline-actions" x-show="s.summaries[child.relativePath]?.files||s.summaries[child.relativePath]?.ahead">
+                  <button class="prompt" x-show="s.summaries[child.relativePath]?.files" :disabled="openingChild" @click="openChildChanges(child.relativePath)">查看改动</button>
+                  <button class="prompt" x-show="s.summaries[child.relativePath]?.ahead" :disabled="openingChild" @click="openChildSync(child.relativePath)">查看待推送</button>
+                </div>
+              </div>
             </template>
           </div>
         </section>
@@ -192,7 +275,7 @@
         <p class="authorline" x-text="branchCommit ? branchCommit.author+' · '+branchCommit.date : viewedBranch?.available===false?'提交详情尚未下载。':s.graphBusy?'正在读取提交详情…':'暂时无法显示提交详情，请刷新后重试。'"></p>
       </section>
     </div>
-    <div class="buffer" data-view="diff" :hidden="s.view!=='diff'"><div class="buffer-heading"><i data-lucide="file-text"></i><h1 x-text="detailView?.title"></h1></div><p class="authorline" x-text="detailView?.label"></p><div class="patch"><template x-for="(line,i) in detailView?.lines||[]" :key="i"><div class="line" :class="{'add':line.startsWith('+'),'del':line.startsWith('-'),'hunk':line.startsWith('@@')}"><code x-text="line||' '"></code></div></template></div></div>
+    <div class="buffer" data-view="diff" :hidden="s.view!=='diff'"><!-- editor-diff --></div>
     <section class="chatpane" aria-label="Claude 对话" x-show="s.view==='chat'"><div class="chathead"><h2><i data-lucide="folder-git-2"></i><span x-text="project?.name"></span></h2><div><button x-ref="settingsTrigger" @click="configureClaude()" title="设置 Claude 路径" aria-label="设置 Claude 路径"><i data-lucide="settings"></i></button><button @click="toggleChat()" aria-label="收起对话"><i data-lucide="x"></i></button></div></div>
       <div class="chatbody" x-ref="messages"><button class="prompt" x-show="project" @click="ask(s.chatCommit?'这次提交改了什么？':'当前分支状态如何？')" :disabled="!!s.running"><span x-text="s.chatCommit?'这次提交改了什么？':'当前分支状态如何？'"></span><i data-lucide="arrow-up-right"></i></button>
       <template x-for="m in s.messages" :key="m.id"><div class="message" :class="{'outgoing':m.who==='你'}"><small x-text="m.who"></small><p x-text="m.text||'正在回答…'"></p></div></template></div>
@@ -205,7 +288,9 @@
       <div class="terminal-stack" x-ref="terminals" x-show="s.term"></div>
     </section>
   </main>
-  <section class="history" aria-label="提交图"><header class="historyhead"><span class="feature-icon violet"><i data-lucide="git-graph"></i></span><h2>提交图</h2><span class="count" x-show="active" x-text="history.length+' 条'"></span></header>
+  <section class="history" :aria-label="rightPreview?'文件差异预览':'提交图'">
+    <div class="right-preview" x-show="rightPreview"><!-- side-diff --></div>
+    <div class="history-content" x-show="!rightPreview"><header class="historyhead"><span class="feature-icon violet"><i data-lucide="git-graph"></i></span><h2>提交图</h2><span class="count" x-show="active" x-text="history.length+' 条'"></span></header>
     <div class="graphscope" x-show="active"><label class="scope-control"><i data-lucide="list-filter"></i><select x-ref="historyScope" aria-label="提交图分支范围" x-model="s.scope" @change="scopeChanged()">
       <option value="all">所有分支</option><optgroup label="本地"><template x-for="ref in s.repo?.local||[]" :key="ref.name"><option :value="'local/'+ref.name" x-text="ref.name"></option></template></optgroup>
       <optgroup label="云端"><template x-for="ref in cloud" :key="ref.name"><option :value="'remote/'+ref.name" x-text="ref.name"></option></template></optgroup></select></label>
@@ -213,6 +298,7 @@
     <div class="historyscroll" id="history-list" x-ref="historyList" x-show="active&&history.length"></div>
     <div class="emptyhistory" role="status" x-show="!active||!history.length"><i data-lucide="git-graph"></i><p x-text="s.repo?.kind==='folder'?'选择子仓库后查看提交图':active&&s.graphBusy?'正在读取提交历史…':active?'当前范围内没有提交':'打开仓库后查看提交图'"></p></div>
     <nav class="paging" x-show="active&&pageCount" aria-label="提交图翻页"><button @click="turnPage(-1)" :disabled="s.page===0" aria-label="上一页"><i data-lucide="chevron-left"></i></button><span x-text="pageRange"></span><button @click="turnPage(1)" :disabled="s.page+1>=pageCount" aria-label="下一页"><i data-lucide="chevron-right"></i></button></nav>
+    </div>
   </section>
 </div>
 <nav class="compact-nav glass segment" aria-label="工作空间面板" :data-choice="pane">
@@ -228,17 +314,29 @@
   <span x-show="active"><i class="status-dot" :class="{'modified':fileCount}"></i><span x-text="fileCount ? fileCount+' 个改动文件' : '工作区干净'"></span></span>
 </footer>
 <div class="notice glass" role="status" x-show="notice"><span x-text="notice"></span><button class="icon-button" @click="notice=''" aria-label="关闭提示"><i data-lucide="x"></i></button></div>
+<dialog class="scrim" id="graph-refs" aria-labelledby="graph-refs-title" @click.self="$el.close()">
+  <section class="settings-sheet glass">
+    <div class="caption"><h2 id="graph-refs-title">提交引用</h2><button type="button" class="icon-button" autofocus @click="$el.closest('dialog').close()" aria-label="关闭提交引用"><i data-lucide="x"></i></button></div>
+    <ul class="graph-ref-list" tabindex="0" aria-labelledby="graph-refs-title"></ul>
+  </section>
+</dialog>
 <dialog class="scrim" x-ref="searchDialog" aria-label="快速打开" @cancel.prevent="closeSearch()" @click.self="closeSearch()">
   <section class="picker glass">
     <div class="picker-field"><i data-lucide="search"></i>
-      <input autofocus x-ref="search" x-model="query" role="combobox" aria-autocomplete="list" aria-expanded="true" aria-controls="search-options"
-        :aria-activedescendant="selectedSearchHit?searchOptionId(selectedSearchHit.key):null" @input="selectedSearchKey=null" @keydown="searchKey($event)" placeholder="搜索项目、分支或提交…" aria-label="搜索项目、分支或提交">
+      <input autofocus autocapitalize="off" autocorrect="off" spellcheck="false" x-ref="search" x-model="query" role="combobox" aria-autocomplete="list" aria-expanded="true" aria-controls="search-options"
+        :aria-activedescendant="selectedSearchHit?searchOptionId(selectedSearchHit.key):null" @input="selectedSearchKey=null;if(!$event.isComposing) $nextTick(()=>scheduleSearch())" @compositionend="$nextTick(()=>scheduleSearch())" @keydown="searchKey($event)" placeholder="搜索项目、分支或提交…" aria-label="搜索项目、分支或提交">
       <button class="escape" @click="closeSearch()" aria-label="关闭搜索">Esc</button>
     </div>
-    <div class="options" role="listbox" aria-label="搜索结果" id="search-options">
-      <template x-for="m in matches" :key="m.key"><button type="button" role="option" tabindex="-1" :id="searchOptionId(m.key)" :aria-selected="selectedSearchKey===m.key" @click="choose(m.key)"><small x-text="m.kind"></small><span x-text="m.label"></span><i data-lucide="corner-down-left"></i></button></template>
+    <div class="search-scope inline-actions" aria-label="搜索范围">
+      <button class="prompt" :aria-pressed="searchScope==='project'" @click="changeSearchScope('project')">当前仓库</button>
+      <button class="prompt" :aria-pressed="searchScope==='all'" @click="changeSearchScope('all')">所有项目</button>
     </div>
-    <p class="no-results" role="status" x-show="!matches.length" x-text="query?'没有匹配结果':'添加项目后，可以在这里搜索项目、分支和提交。'"></p>
+    <div class="options" role="listbox" aria-label="搜索结果" id="search-options">
+      <template x-for="m in matches" :key="m.key"><button type="button" role="option" tabindex="-1" :id="searchOptionId(m.key)" :aria-selected="selectedSearchKey===m.key" @click="choose(m.key)"><small x-text="m.kind"></small><span class="search-hit-label"><span x-text="m.label"></span><small x-show="m.location" :title="m.path" x-text="m.location"></small></span><i data-lucide="corner-down-left"></i></button></template>
+    </div>
+    <p class="no-results" role="status" x-show="crossBusy||(!matches.length&&!crossFailures)" x-text="crossBusy?'正在搜索所有项目…':query?(searchScope==='project'?'当前仓库没有匹配的分支或提交':'所有项目中没有匹配结果'):'可按项目名、分支名或提交搜索。'"></p>
+    <p class="no-results" role="status" x-show="crossFailures" x-text="crossFailures+' 个仓库未能检索，已显示其余结果。'"></p>
+    <button class="prompt search-more" x-show="query.trim()&&!matches.length&&searchScope==='project'" @click="changeSearchScope('all')">在所有项目中搜索</button>
   </section>
 </dialog>
 <dialog class="scrim" x-ref="settingsDialog" aria-labelledby="settings-title" @cancel.prevent="closeSettings()" @click.self="closeSettings()">

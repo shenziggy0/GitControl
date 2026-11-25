@@ -4,7 +4,7 @@ use std::{
     collections::{BTreeMap, HashSet},
     ffi::OsString,
     fs,
-    io::{Read, Write},
+    io::{Read, Seek, Write},
     os::unix::process::CommandExt,
     path::{Path, PathBuf},
     process::{Command, Stdio},
@@ -72,9 +72,22 @@ fn git_cmd(path: &Path) -> Command {
     cmd
 }
 
-fn output(mut cmd: Command, timeout: u64) -> Result<String, String> {
+fn output(cmd: Command, timeout: u64) -> Result<String, String> {
+    run_git(cmd, timeout, Stdio::null())
+}
+
+fn output_with_input(cmd: Command, timeout: u64, input: &str) -> Result<String, String> {
+    // File-backed stdin lets Git read large batches without blocking the timeout loop.
+    let mut file = tempfile::tempfile().map_err(|e| e.to_string())?;
+    file.write_all(input.as_bytes())
+        .and_then(|_| file.rewind())
+        .map_err(|e| e.to_string())?;
+    run_git(cmd, timeout, Stdio::from(file))
+}
+
+fn run_git(mut cmd: Command, timeout: u64, input: Stdio) -> Result<String, String> {
     let mut child = cmd
-        .stdin(Stdio::null())
+        .stdin(input)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .process_group(0)
@@ -152,6 +165,7 @@ pub struct Tag {
     pub name: String,
     // The graph uses commit IDs. Tags on trees and blobs have no graph row.
     pub oid: Option<String>,
+    pub unavailable: bool,
 }
 #[derive(Clone, Deserialize, Serialize)]
 pub struct Status {
@@ -162,6 +176,7 @@ pub struct Status {
     pub local: Vec<Branch>,
     pub tracking: Vec<Branch>,
     pub tags: Vec<Tag>,
+    pub tags_error: Option<String>,
     pub remotes: Vec<String>,
 }
 
@@ -205,39 +220,57 @@ fn parse_branches(text: &str) -> Vec<Branch> {
         .collect()
 }
 fn read_tags(project: &Project) -> Result<Vec<Tag>, String> {
-    let format = "--format=%(refname:strip=2)%00%(objecttype)%00%(objectname)%00%(*objecttype)%00%(*objectname)";
+    let format = "--format=%(refname:strip=2)%00%(objectname)";
     let refs = read(project, &["for-each-ref", format, "refs/tags"])?;
-    let mut tags = Vec::new();
+    let invalid = || "无法读取 Git 标签。".to_owned();
+    let mut names = Vec::new();
+    let mut input = String::new();
     for line in refs.lines() {
-        let fields: Vec<_> = line.split('\0').collect();
-        let [name, kind, oid, target_kind, target_oid] = fields[..] else {
-            return Err("无法读取 Git 标签。".into());
-        };
-        let commit = match (kind, target_kind) {
-            ("commit", _) => Some(oid.to_owned()),
-            ("tag", "commit") => Some(target_oid.to_owned()),
-            // for-each-ref dereferences one layer; a tag can point to another tag.
-            ("tag", "tag") => read(
-                project,
-                &[
-                    "rev-parse",
-                    "--verify",
-                    "--quiet",
-                    &format!("{oid}^{{commit}}"),
-                ],
-            )
-            .ok(),
-            _ => None,
-        };
-        tags.push(Tag {
-            name: name.to_owned(),
-            oid: commit,
-        });
+        let (name, oid) = line.split_once('\0').ok_or_else(invalid)?;
+        if !valid_oid(oid) {
+            return Err(invalid());
+        }
+        names.push(name);
+        // Peel all annotated tag layers. Git reports missing objects per input.
+        input.push_str(oid);
+        input.push_str("^{}\n");
     }
-    Ok(tags)
+    if names.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mut cmd = git_cmd(&project.path);
+    cmd.args(["cat-file", "--batch-check=%(objectname) %(objecttype)"]);
+    let output = output_with_input(cmd, 15, &input)?;
+    let targets = output.lines();
+    if targets.clone().count() != names.len() {
+        return Err(invalid());
+    }
+    names
+        .into_iter()
+        .zip(targets)
+        .map(|(name, target)| {
+            let (oid, kind) = target.split_once(' ').ok_or_else(invalid)?;
+            let (oid, unavailable) = match kind {
+                "commit" if valid_oid(oid) => (Some(oid.to_owned()), false),
+                "tree" | "blob" if valid_oid(oid) => (None, false),
+                "missing" => (None, true),
+                _ => return Err(invalid()),
+            };
+            Ok(Tag {
+                name: name.to_owned(),
+                oid,
+                unavailable,
+            })
+        })
+        .collect()
 }
 
 pub fn status(project: &Project) -> Result<Status, String> {
+    status_with_tags(project, true)
+}
+
+fn status_with_tags(project: &Project, include_tags: bool) -> Result<Status, String> {
     if !project.path.is_dir() {
         return Err("项目目录已移动或不可访问。".into());
     }
@@ -259,6 +292,7 @@ pub fn status(project: &Project) -> Result<Status, String> {
         local: vec![],
         tracking: vec![],
         tags: vec![],
+        tags_error: None,
         remotes: vec![],
     };
     let raw = match result {
@@ -343,7 +377,12 @@ pub fn status(project: &Project) -> Result<Status, String> {
     let format="--format=%(refname)%00%(objectname)%00%(upstream:remotename)%00%(upstream:remoteref)%00%(upstream:short)%00%(symref)";
     status.local = parse_branches(&read(project, &["for-each-ref", format, "refs/heads"])?);
     status.tracking = parse_branches(&read(project, &["for-each-ref", format, "refs/remotes"])?);
-    status.tags = read_tags(project)?;
+    if include_tags {
+        match read_tags(project) {
+            Ok(tags) => status.tags = tags,
+            Err(error) => status.tags_error = Some(error),
+        }
+    }
     status.remotes = read(project, &["remote"])?
         .lines()
         .map(str::to_owned)
@@ -510,21 +549,25 @@ pub fn commit_summary(p: &Project, oid: &str) -> Result<Commit, String> {
 
 pub fn history(p: &Project, tips: &[String]) -> Result<Vec<Commit>, String> {
     let mut seen = HashSet::new();
-    let mut cmd = git_cmd(&p.path);
-    cmd.args(["log", "--date-order", COMMIT_FORMAT]);
+    let mut input = String::new();
     for tip in tips {
         if !valid_oid(tip) {
             return Err("无效提交 ID。".into());
         }
         if seen.insert(tip) {
-            cmd.arg(tip);
+            input.push_str(tip);
+            input.push('\n');
         }
     }
     if seen.is_empty() {
         return Ok(Vec::new());
     }
-    cmd.arg("--");
-    Ok(output(cmd, 45)?.lines().filter_map(parse_commit).collect())
+    let mut cmd = git_cmd(&p.path);
+    cmd.args(["log", "--date-order", COMMIT_FORMAT, "--stdin", "--"]);
+    Ok(output_with_input(cmd, 45, &input)?
+        .lines()
+        .filter_map(parse_commit)
+        .collect())
 }
 
 pub fn divergence(p: &Project, local: &str, upstream: &str) -> Option<Vec<u32>> {
@@ -597,58 +640,87 @@ pub fn commit_files(p: &Project, oid: &str) -> Result<Vec<BTreeMap<&'static str,
         .collect())
 }
 pub fn patch(p: &Project, oid: Option<&str>, path: &str, group: &str) -> Result<String, String> {
-    let raw = if let Some(oid) = oid {
+    patch_text(p, oid, path, group, None).map(|(text, _)| bounded_patch(&text))
+}
+
+fn patch_text(
+    p: &Project,
+    oid: Option<&str>,
+    path: &str,
+    group: &str,
+    old: Option<&str>,
+) -> Result<(String, bool), String> {
+    if let Some(oid) = oid {
         if !valid_oid(oid) {
             return Err("无效提交 ID。".into());
         }
-        read(
-            p,
-            &[
-                "show",
-                "--format=",
-                "--first-parent",
-                "--diff-merges=first-parent",
-                "--no-ext-diff",
-                "--no-textconv",
-                oid,
-                "--",
-                path,
-            ],
-        )?
-    } else if group == "untracked" {
+        let mut args = vec![
+            "show",
+            "--format=",
+            "--first-parent",
+            "--diff-merges=first-parent",
+            "--no-ext-diff",
+            "--no-textconv",
+            "--find-renames",
+            oid,
+            "--",
+            path,
+        ];
+        if let Some(old) = old.filter(|old| *old != path) {
+            args.push(old);
+        }
+        return read(p, &args).map(|text| (text, false));
+    }
+    if group == "untracked" {
         let path = p.path.join(path);
         if fs::symlink_metadata(&path)
             .map_err(|e| e.to_string())?
             .is_symlink()
         {
-            return Ok(format!(
-                "链接 → {}",
-                fs::read_link(path).map_err(|e| e.to_string())?.display()
+            return Ok((
+                format!(
+                    "链接 → {}",
+                    fs::read_link(path).map_err(|e| e.to_string())?.display()
+                ),
+                false,
             ));
         }
         let mut bytes = Vec::new();
         fs::File::open(path)
-            .and_then(|f| f.take(131072).read_to_end(&mut bytes))
+            .and_then(|f| f.take(131073).read_to_end(&mut bytes))
             .map_err(|e| e.to_string())?;
-        if bytes.contains(&0) {
-            return Ok("二进制文件".into());
-        }
-        String::from_utf8_lossy(&bytes).into_owned()
-    } else {
-        let mut args = vec!["diff", "--no-ext-diff", "--no-textconv"];
-        if group == "staged" {
-            args.push("--cached")
-        }
-        args.extend(["--", path]);
-        read(p, &args)?
-    };
-    Ok(raw
-        .lines()
+        let truncated = bytes.len() > 131072;
+        bytes.truncate(131072);
+        let text = match std::str::from_utf8(&bytes) {
+            Ok(text) if !bytes.contains(&0) => text.to_owned(),
+            Err(e) if truncated && e.error_len().is_none() => {
+                String::from_utf8_lossy(&bytes[..e.valid_up_to()]).into_owned()
+            }
+            _ => "二进制文件".into(),
+        };
+        return Ok((text, truncated));
+    }
+    let mut args = vec!["diff", "--no-ext-diff", "--no-textconv", "--find-renames"];
+    if group == "staged" {
+        args.push("--cached");
+    }
+    args.extend(["--", path]);
+    if let Some(old) = old.filter(|old| *old != path) {
+        args.push(old);
+    }
+    read(p, &args).map(|text| (text, false))
+}
+
+fn bounded_patch(raw: &str) -> String {
+    raw.lines()
         .take(500)
         .map(|s| s.chars().take(1200).collect::<String>())
         .collect::<Vec<_>>()
-        .join("\n"))
+        .join("\n")
 }
 
 mod commit;
 pub use commit::commit;
+
+mod workbench;
+pub use workbench::*;

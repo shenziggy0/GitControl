@@ -2,7 +2,9 @@
 mod acceptance;
 mod agent;
 mod git;
+mod snapshots;
 mod terminal;
+mod workbench;
 mod workspace;
 
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
@@ -15,7 +17,7 @@ use std::{
         atomic::{AtomicBool, Ordering},
         Arc, Mutex,
     },
-    time::{Duration, Instant},
+    time::Duration,
 };
 use tauri::{ipc::Channel, AppHandle, Emitter, Manager, State};
 use tauri_plugin_dialog::DialogExt;
@@ -46,6 +48,8 @@ struct App {
     agents: Mutex<HashMap<String, Request>>,
     sessions: Mutex<HashMap<String, String>>,
     journal: Mutex<HashMap<String, Journal>>,
+    writes: Mutex<HashSet<PathBuf>>,
+    push_previews: Mutex<HashMap<String, (String, git::SyncPreview)>>,
 }
 impl App {
     fn project(&self, id: &str) -> Result<Project> {
@@ -89,6 +93,59 @@ impl App {
         }
         Ok(())
     }
+    fn commit_selected(
+        &self,
+        project: &Project,
+        request_id: &str,
+        expected: &git::Status,
+        changes: &[git::Change],
+        message: &str,
+    ) -> Result<String> {
+        let _write = workbench::lock_write(self, project)?;
+        let key = format!("{}/{}", project.id, request_id);
+        if let Some(record) = self.journal.lock().unwrap().get(&key) {
+            return record
+                .outcome
+                .clone()
+                .ok_or_else(|| "上次提交结果待核查，请检查当前历史与暂存区。".into());
+        }
+        let current = git::status(project)?;
+        if current.branch != expected.branch
+            || current.head != expected.head
+            || !changes.iter().all(|change| current.files.contains(change))
+        {
+            return Err("分支或选中的改动已改变，请重新核对。".into());
+        }
+        self.save_journal(
+            key.clone(),
+            Journal {
+                head: expected.head.clone(),
+                outcome: None,
+                running: true,
+            },
+        )?;
+        match git::commit(project, expected, changes, message) {
+            Ok(oid) => {
+                self.save_journal(
+                    key,
+                    Journal {
+                        head: expected.head.clone(),
+                        outcome: Some(oid.clone()),
+                        running: false,
+                    },
+                )
+                .map_err(|e| format!("提交 {oid} 已生成，但提交记录保存失败：{e}"))?;
+                Ok(oid)
+            }
+            Err(error) => {
+                if git::status(project).is_ok_and(|s| s.head == expected.head) {
+                    self.clear_journal(&key)?;
+                }
+                Err(error)
+            }
+        }
+    }
+
     fn stop_project(&self, id: &str) {
         self.terminal.lock().unwrap().remove(id);
         let requests = self.agents.lock().unwrap();
@@ -99,6 +156,7 @@ impl App {
             }
         }
         self.sessions.lock().unwrap().remove(id);
+        self.push_previews.lock().unwrap().remove(id);
     }
 }
 
@@ -216,21 +274,21 @@ async fn project_select(app: AppHandle, project_id: String) -> Result<()> {
         }
         let event_id = p.id.clone();
         let emitter = app.clone();
-        let mut last = Instant::now()
-            .checked_sub(Duration::from_secs(2))
-            .unwrap_or_else(Instant::now);
+        let (changed, changes) = std::sync::mpsc::sync_channel(1);
         let mut watcher = notify::recommended_watcher(move |e: notify::Result<notify::Event>| {
-            if let Ok(e) = e {
-                if e.kind.is_access() {
-                    return;
-                }
-                if last.elapsed() >= Duration::from_millis(130) {
-                    last = Instant::now();
-                    let _ = emitter.emit("workspace-changed", &event_id);
-                }
+            if e.is_ok_and(|event| !event.kind.is_access()) {
+                let _ = changed.try_send(());
             }
         })
         .map_err(|e| e.to_string())?;
+        // Read after the batch, including Git's final lockfile rename.
+        std::thread::spawn(move || {
+            while changes.recv().is_ok() {
+                std::thread::sleep(Duration::from_millis(130));
+                let _ = changes.try_recv();
+                let _ = emitter.emit("workspace-changed", &event_id);
+            }
+        });
         let mut paths = HashSet::from([p.path.clone()]);
         let mut mode = RecursiveMode::NonRecursive;
         for option in ["--absolute-git-dir", "--git-common-dir"] {
@@ -360,7 +418,9 @@ async fn repo_patch(
     oid: Option<String>,
     path: String,
     group: String,
-) -> Result<String> {
+    structured: Option<bool>,
+    stamp: Option<String>,
+) -> Result<Value> {
     let p = state.project(&project_id)?;
     if path.is_empty()
         || Path::new(&path).components().any(|part| {
@@ -375,6 +435,31 @@ async fn repo_patch(
         return Err("无效文件路径。".into());
     }
     background(move || {
+        if structured.unwrap_or(false) {
+            let old = if oid.is_none() {
+                let status = git::status(&p)?;
+                let file = status
+                    .files
+                    .iter()
+                    .find(|c| {
+                        c.path == path
+                            && c.group == group
+                            && stamp.as_ref().is_none_or(|stamp| stamp == &c.stamp)
+                    })
+                    .ok_or("文件状态已变化，请刷新。")?;
+                file.old.clone()
+            } else {
+                None
+            };
+            return serde_json::to_value(git::diff_preview(
+                &p,
+                oid.as_deref(),
+                &path,
+                &group,
+                old.as_deref(),
+            )?)
+            .map_err(|e| e.to_string());
+        }
         if oid.is_none()
             && !git::status(&p)?
                 .files
@@ -383,7 +468,7 @@ async fn repo_patch(
         {
             return Err("文件状态已变化，请刷新。".into());
         }
-        git::patch(&p, oid.as_deref(), &path, &group)
+        git::patch(&p, oid.as_deref(), &path, &group).map(Value::String)
     })
     .await
 }
@@ -456,6 +541,7 @@ async fn agent_send(
     question: String,
     selected: Vec<git::Change>,
     commit_oid: Option<String>,
+    purpose: Option<String>,
     events: Channel<Value>,
 ) -> Result<()> {
     let project = app.state::<App>().project(&project_id)?;
@@ -486,25 +572,14 @@ async fn agent_send(
                     return Err("上次提交结果待核查，请检查当前历史与暂存区。".into())
                 }
             let snapshot=git::status(&project)?;
-            if let Some(commit)=agent::commit_request(&question,&snapshot,&selected) {
+            let commit = if purpose.is_none() { agent::commit_request(&question,&snapshot,&selected) } else { None };
+            if let Some(commit)=commit {
                 let (changes,message)=commit?;
                 request.writes.store(true,Ordering::SeqCst);
                 if request.canceled.load(Ordering::SeqCst){return Err("已取消本次请求。".into())}
-                state.save_journal(key.clone(),Journal{head:snapshot.head.clone(),outcome:None,running:true})?;
-                match git::commit(&project,&snapshot,&changes,&message) {
-                    Ok(oid)=>{
-                        state.save_journal(key,Journal{head:snapshot.head,outcome:Some(oid.clone()),running:false})
-                            .map_err(|e|format!("提交 {oid} 已生成，但提交记录保存失败：{e}"))?;
-                        let _=events.send(json!({"kind":"commit","oid":oid,"message":message}));
-                        Ok(())
-                    }
-                    Err(e)=>{
-                        if git::status(&project).is_ok_and(|s|s.head==snapshot.head){
-                            state.clear_journal(&key)?;
-                        }
-                        Err(e)
-                    }
-                }
+                let oid = state.commit_selected(&project, &request_id, &snapshot, &changes, &message)?;
+                let _ = events.send(json!({"kind":"commit","oid":oid,"message":message}));
+                Ok(())
             }else{
                 if request.canceled.load(Ordering::SeqCst){return Err("已停止回答。".into())}
                 let referenced=commit_oid.as_deref().filter(|oid|!oid.is_empty())
@@ -522,6 +597,15 @@ async fn agent_send(
                 let mut context=format!("用户问题：{question}\n\n本机 Git 读出的资料：{status}\n用户选中的文件：{}",serde_json::to_string(&selected).unwrap_or_default());
                 if let Some(commit)=referenced {
                     context.push_str(&format!("\n用户引用的历史提交资料：{commit}\n问题中的「这次提交」指该历史提交。"));
+                }
+                if purpose.as_deref() == Some("commit_message") {
+                    if selected.is_empty() || !selected.iter().all(|change| snapshot.files.contains(change)) {
+                        return Err("选中的改动已变化，请重新选择。".into());
+                    }
+                    for change in selected.iter().take(12) {
+                        let patch = git::patch(&project, None, &change.path, &change.group)?;
+                        context.push_str(&format!("\n{}（{}）\n{}", change.path, change.group, patch.chars().take(2200).collect::<String>()));
+                    }
                 }
                 let result=agent::answer(&project,executable.as_deref(),&session,existing.is_some(),&context,&events,&request.pid,&request.canceled);
                 if result.is_ok()&&state.project(&project_id).is_ok(){state.sessions.lock().unwrap().insert(project_id.clone(),session);}
@@ -571,6 +655,8 @@ fn main() {
                 agents: Mutex::default(),
                 sessions: Mutex::default(),
                 journal: Mutex::new(journal),
+                writes: Mutex::default(),
+                push_previews: Mutex::default(),
             });
             Ok(())
         })
@@ -593,7 +679,20 @@ fn main() {
             terminal_close,
             claude_path,
             agent_send,
-            agent_cancel
+            agent_cancel,
+            workbench::repo_commit_selected,
+            workbench::repo_commit_summary,
+            workbench::repo_commit_outcome,
+            workbench::project_child_summary,
+            workbench::workspace_search,
+            workbench::repo_sync_preview,
+            workbench::repo_push,
+            workbench::repo_line_origin,
+            workbench::snapshot_list,
+            workbench::snapshot_create,
+            workbench::snapshot_delete,
+            workbench::snapshot_preview,
+            workbench::snapshot_restore_file
         ])
         .build(tauri::generate_context!())
         .expect("无法启动 GitControl")
