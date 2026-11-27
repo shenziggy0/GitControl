@@ -9,4 +9,5 @@ Apple M 系列使用 aarch64 安装包，Intel 处理器使用 x64 安装包。
    “系统设置 → 隐私与安全性”，找到 GitControl 并选择“仍要打开”。
    此版本使用本地临时签名，未经过 Apple 公证。
 4. 点击资源管理器中的 ＋，选择本机 Git 仓库。
-   需要先安装 Git。要使用 Claude 对话，请先在本机登录 Claude Code。
+   需要先安装 Git。要使用 Agent 问答，请先在本机安装和登录所选 CLI，
+   再到 Agent 问答顶部选择自动检测到的 CLI。

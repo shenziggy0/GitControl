@@ -8,7 +8,7 @@ GitControl 是一个 macOS 桌面 Git 工作台。选中一个仓库，就能看
 
 ## 安装
 
-需要 **macOS 13 或更高版本**和本机 Git。可以在终端运行 `git --version` 检查。Claude Code 是可选依赖，用到对话功能时再安装和登录即可。
+需要 **macOS 13 或更高版本**和本机 Git。可以在终端运行 `git --version` 检查。Agent CLI 是可选依赖，可在使用问答时安装和登录。
 
 1. 在苹果菜单  → **关于本机** 查看芯片。Apple M 系列选择文件名以 `_aarch64.dmg` 结尾的安装包，Intel 选择 `_x64.dmg`。
 2. 发布版本后，从 **Assets** 下载对应的 DMG。若页面尚无版本，可以按下方「从源码运行」启动。[GitHub Releases](https://github.com/shenziggy0/GitControl/releases)
@@ -36,7 +36,17 @@ GitControl 是一个 macOS 桌面 Git 工作台。选中一个仓库，就能看
 
 差异会显示旧版与新版行号。点击行号可查该行来自哪次提交。需要原始 Git 补丁时，点「原始补丁」。
 
-可以让 Claude 为所选改动生成说明草稿，或解释某一行以及所在提交。首次使用时，可在 Claude 面板的齿轮中设置可执行文件路径。也可以继续在 Claude 对话中输入「提交选中的改动，提交说明：更新安装文档」或「提交已暂存的改动」。
+可以让 Agent 为所选改动生成说明草稿，或解释某一行以及所在提交。也可以在 Agent 问答里输入「提交选中的改动，提交说明：更新安装文档」或「提交已暂存的改动」，由 GitControl 执行本地提交。
+
+### 使用 Agent 问答
+
+GitControl 打开时会自动查找本机已安装的 Agent CLI。在「Agent 问答」顶部选择工具，应用会记住上次选择。各 CLI 沿用本机登录。
+
+检测名单参照 CC Switch 4.0.43 的 CLI，并额外支持 Cursor Agent。问答支持 Claude Code、Codex、Antigravity、Pi、CodeBuddy、Cursor、Gemini CLI、Grok Build、OpenCode、OpenClaw、MiniMax Code、Kimi Code、Oh My Pi 和 GitHub Copilot CLI 的兼容版本。Hermes Agent、DeepSeek Harness 和缺少问答所需命令的旧版本可在 GitControl 的终端中运行。
+
+Antigravity 需要重新登录时，可以在问答中点「登录 Antigravity」。在浏览器的 Google 页面复制授权码，回到 GitControl 的登录窗口，点击下方区域，按 **⌘V** 粘贴，再按回车。登录成功后，GitControl 会把原问题放回输入框。
+
+切换后，下一次提问会开启新会话。之前的回答仍可在当前窗口查看。Antigravity 在临时目录接收 GitControl 提供的项目资料。
 
 ## 从源码运行
 

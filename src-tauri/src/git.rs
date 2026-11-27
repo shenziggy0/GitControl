@@ -12,7 +12,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-fn tool_path() -> OsString {
+pub(crate) fn tool_path() -> OsString {
     let mut dirs: Vec<_> = std::env::var_os("PATH")
         .map(|s| std::env::split_paths(&s).collect())
         .unwrap_or_default();

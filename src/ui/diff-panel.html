@@ -32,6 +32,6 @@
     <div class="inline-actions" x-show="DIFF_DETAIL?.lookup?.value">
       <button class="prompt" @click="inspect(DIFF_DETAIL.lookup.value.commit)" x-text="DIFF_DETAIL?.lookup?.value?.commit.subject"></button>
     </div>
-    <button class="prompt" :disabled="!!s.running" x-show="DIFF_DETAIL?.lookup&&!DIFF_DETAIL?.lookup.pending&&!DIFF_DETAIL?.lookup.error" @click="explainLine(DIFF_DETAIL)">用 Claude 解释这一行</button>
+    <button class="prompt" :disabled="!!s.running||selectedAgentOption?.questions===false" x-show="DIFF_DETAIL?.lookup&&!DIFF_DETAIL?.lookup.pending&&!DIFF_DETAIL?.lookup.error" @click="explainLine(DIFF_DETAIL)">用 Agent 解释这一行</button>
   </div>
 </div>

@@ -16,11 +16,20 @@ pub struct Terminal {
 }
 impl Terminal {
     pub fn open(path: &Path, rows: u16, cols: u16, events: Channel<Value>) -> Result<Self, String> {
+        let mut command = CommandBuilder::new_default_prog();
+        command.cwd(path);
+        Self::open_command(command, rows, cols, events)
+    }
+
+    pub fn open_command(
+        mut command: CommandBuilder,
+        rows: u16,
+        cols: u16,
+        events: Channel<Value>,
+    ) -> Result<Self, String> {
         let pair = native_pty_system()
             .openpty(size(rows, cols))
             .map_err(|e| e.to_string())?;
-        let mut command = CommandBuilder::new_default_prog();
-        command.cwd(path);
         command.env("TERM", "xterm-256color");
         let mut child = pair
             .slave

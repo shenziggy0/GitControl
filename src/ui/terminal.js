@@ -34,8 +34,10 @@ export function updateTerminalAppearance() {
   }
 }
 
-export async function showTerminal(projectId, enabled, container, report, canFocus) {
-  for (const [id, item] of sessions) item.element.hidden = id !== projectId || !enabled;
+export async function showTerminal(projectId, enabled, container, report, canFocus, options={}) {
+  for (const [id, item] of sessions) {
+    if (item.element.parentElement === container) item.element.hidden = id !== projectId || !enabled;
+  }
   if (!enabled || !projectId) return;
   const existing = sessions.get(projectId);
   if (existing) {
@@ -61,12 +63,14 @@ export async function showTerminal(projectId, enabled, container, report, canFoc
     if (sessions.get(projectId) !== entry) return;
     if (event.kind === 'output') {
       term.write(Uint8Array.from(atob(event.data), c => c.charCodeAt(0)));
+    } else if (options.onExit) {
+      options.onExit(event.exit);
     } else {
       term.writeln('\r\n[终端已退出 · '+(event.exit ?? '未知状态')+'，关闭后可重新打开]');
     }
   };
   try {
-    const id = await invoke('terminal_open', { projectId, rows: term.rows, cols: term.cols, events });
+    const id = await invoke(options.command||'terminal_open', { projectId, rows: term.rows, cols: term.cols, events, ...options.args });
     if (sessions.get(projectId) !== entry) {
       await invoke('terminal_close',{projectId,id});
       return;

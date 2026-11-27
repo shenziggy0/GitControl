@@ -351,10 +351,24 @@ kbd, .escape { color: var(--secondary); font: 11px/1.5 var(--mono); border: 1px 
 .chathead h2 { min-width: 0; font-size: 14px; }
 .chathead h2 span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .chathead h2 .lucide { color: var(--link); }
+.agent-choice { max-width: min(175px, 45vw); min-height: 30px; padding: 4px 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); color: inherit; font: inherit; font-size: 12px; }
 .chatbody { flex: 1; min-height: 0; overflow: auto; padding: 12px 2px; }
 .message { width: fit-content; max-width: 91%; margin: 10px 0; padding: 8px 13px; border-radius: 16px 16px 16px 5px; background: var(--subtle); }
 .message.outgoing { margin-left: auto; border-radius: 16px 16px 5px 16px; background: var(--accent-soft); }
-.message p { white-space: pre-wrap; overflow-wrap: anywhere; }
+.message > p { white-space: pre-wrap; overflow-wrap: anywhere; }
+.agent-markdown { overflow-x: auto; overflow-wrap: anywhere; user-select: text; }
+.agent-markdown > :first-child { margin-top: 0; }
+.agent-markdown > :last-child { margin-bottom: 0; }
+.agent-markdown > * + * { margin-top: .65em; }
+.agent-markdown :is(ul, ol) { padding-inline-start: 1.5em; }
+.agent-markdown blockquote { margin-inline: 0; padding-inline-start: .75em; border-inline-start: 2px solid var(--line-strong); color: var(--secondary); }
+.agent-markdown :not(pre) > code, .agent-markdown pre { border-radius: 6px; background: var(--surface); }
+.agent-markdown :not(pre) > code { padding: .1em .3em; font-size: .9em; }
+.agent-markdown pre { padding: .65em .8em; overflow-x: auto; white-space: pre; font-size: .9em; }
+.agent-markdown a { color: var(--link); }
+.agent-markdown table { border-collapse: collapse; }
+.agent-markdown :is(th, td) { padding: .25em .55em; border: 1px solid var(--line-strong); }
+.agent-login-button { margin-top: 8px; }
 .message small, .compose-context { color: var(--secondary); font-size: 11px; }
 .compose-context { margin: 3px 5px; }
 .compose-context button { display: grid; place-items: center; width: 25px; height: 25px; }
@@ -396,6 +410,10 @@ kbd, .escape { color: var(--secondary); font: 11px/1.5 var(--mono); border: 1px 
 .settings-sheet label { display: block; margin: 5px 0; font-size: 13px; font-weight: 600; }
 .settings-sheet input { width: 100%; padding: 9px 11px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); font: 13px var(--mono); }
 .settings-sheet p { margin-top: 6px; font-size: 12px; }
+.agent-login-sheet { width: min(560px, 100%); }
+.agent-login-sheet .terminal-stack { height: 180px; margin-top: 12px; border: 1px solid var(--line); border-radius: 8px; }
+.agent-terminal-sheet { width: min(780px, 100%); }
+.agent-terminal-sheet .terminal-stack { height: min(55vh, 500px); }
 #path-help { color: var(--secondary); }
 .sheet-actions { display: flex; justify-content: flex-end; gap: 7px; margin-top: 20px; }
 

@@ -13,7 +13,8 @@
     "@xterm/addon-fit": "^0.10",
     "@xterm/xterm": "^5.5",
     "alpinejs": "^3.14",
-    "lucide": "^1.78.0"
+    "lucide": "^1.78.0",
+    "markdown-it": "^15.0.3"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2",

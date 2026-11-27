@@ -6,7 +6,7 @@
   <div class="window-location" :title="project?.path"><i data-lucide="layers"></i>工作空间<span x-show="project">/</span><b x-text="project?.name"></b></div>
   <button class="commandbox" @click="openSearch($el)" x-ref="launch" title="搜索项目、分支或提交（⌘P）" aria-label="搜索项目、分支或提交"><i data-lucide="search"></i><span>搜索项目、分支或提交</span><kbd>⌘ P</kbd></button>
   <div class="layout-actions">
-    <button id="chat" title="切换 Claude 对话" aria-label="切换 Claude 对话" :disabled="!project" :aria-pressed="s.view==='chat'" @click="toggleChat()"><i data-lucide="message-square"></i><span>Claude</span></button>
+    <button id="chat" title="切换 Agent 问答" aria-label="切换 Agent 问答" :disabled="!project" :aria-pressed="s.view==='chat'" @click="toggleChat()"><i data-lucide="message-square"></i><span>Agent</span></button>
     <button id="term" title="切换终端" aria-label="切换终端" :disabled="!project" :aria-pressed="s.term" @click="toggleTerminal()"><i data-lucide="square-terminal"></i><span>终端</span></button>
   </div>
 </header>
@@ -73,7 +73,7 @@
   </aside>
   <main class="editor" :class="{'has-project':!!project}" x-ref="editor" tabindex="-1">
     <div class="page-bar">
-      <h1 x-text="s.view==='status' ? '工作台' : s.view==='chat' ? 'Claude 对话' : s.view==='diff' ? '文件差异' : s.view==='branch' ? '分支详情' : '提交详情'"></h1>
+      <h1 x-text="s.view==='status' ? '工作台' : s.view==='chat' ? 'Agent 问答' : s.view==='diff' ? '文件差异' : s.view==='branch' ? '分支详情' : '提交详情'"></h1>
       <div class="page-actions inline-actions" x-show="active&&s.view==='status'">
       <button class="prompt" :disabled="!!(s.snapshots?.busy)" :aria-expanded="!!s.snapshots" @click="s.snapshots?s.snapshots=null:showSnapshots()"><i data-lucide="history"></i>工作树快照</button>
       <button class="refresh-button" x-show="active&&s.view==='status'" @click="refresh(projectId,true)" :disabled="s.refreshing" :aria-busy="s.refreshing||s.refreshingRemote" aria-label="刷新分支状态">
@@ -89,13 +89,13 @@
         <span x-show="detailView?.view==='diff'"><i data-lucide="file-diff"></i></span>
         <span class="tab-title" x-text="detailView?.view==='diff' ? detailView.title.split('/').at(-1) : detailView?.title"></span>
       </button>
-      <button x-show="s.chat" @click="openChat()" :aria-pressed="s.view==='chat'"><i data-lucide="message-square"></i>Claude</button>
+      <button x-show="s.chat" @click="openChat()" :aria-pressed="s.view==='chat'"><i data-lucide="message-square"></i>Agent</button>
     </nav>
     <div class="editor-context" x-show="detailOpen">
       <button class="detail-action" x-show="detailOpen" @click="backFromDetail()" title="回到上一页"><i data-lucide="arrow-left"></i>返回</button>
       <div class="crumbs">
         <i data-lucide="folder-git-2"></i><span x-text="project?.name||'工作空间'"></span>
-        <i data-lucide="chevron-right"></i><span :title="detailOpen ? detailView.title : null" x-text="detailOpen ? detailView.title : s.view==='chat' ? 'Claude 对话' : '分支状态'"></span>
+        <i data-lucide="chevron-right"></i><span :title="detailOpen ? detailView.title : null" x-text="detailOpen ? detailView.title : s.view==='chat' ? 'Agent 问答' : '分支状态'"></span>
       </div>
       <button class="detail-action close-detail" x-show="detailOpen" @click="closeDetail()" aria-label="关闭详情" title="关闭详情，回到分支状态"><i data-lucide="x"></i></button>
     </div>
@@ -147,7 +147,7 @@
             <input id="commit-message" x-model="s.commitDraft" :disabled="s.commitBusy" placeholder="用中文写一句这次改了什么">
             <div class="inline-actions">
               <button class="primary" type="submit" :disabled="s.commitBusy||s.commitUncertain||!s.selected.length||!s.commitDraft.trim()" x-text="s.commitBusy?'正在提交…':'提交 '+selectedText"></button>
-              <button class="prompt" type="button" @click="suggestCommitMessage()" :disabled="s.commitBusy||!!s.running||!s.selected.length">用 Claude 生成说明</button>
+              <button class="prompt" type="button" @click="suggestCommitMessage()" :disabled="s.commitBusy||!!s.running||!s.selected.length||selectedAgentOption?.questions===false">用 Agent 生成说明</button>
               <button class="prompt" type="button" x-show="s.running" @click="cancel()">停止生成</button>
             </div>
           </form>
@@ -292,12 +292,29 @@
       </section>
     </div>
     <div class="buffer" data-view="diff" :hidden="s.view!=='diff'"><!-- editor-diff --></div>
-    <section class="chatpane" aria-label="Claude 对话" x-show="s.view==='chat'"><div class="chathead"><h2><i data-lucide="folder-git-2"></i><span x-text="project?.name"></span></h2><div><button x-ref="settingsTrigger" @click="configureClaude()" title="设置 Claude 路径" aria-label="设置 Claude 路径"><i data-lucide="settings"></i></button><button @click="toggleChat()" title="收起对话" aria-label="收起对话"><i data-lucide="x"></i></button></div></div>
-      <div class="chatbody" x-ref="messages"><button class="prompt" x-show="project" @click="ask(s.chatCommit?'这次提交改了什么？':'当前分支状态如何？')" :disabled="!!s.running"><span x-text="s.chatCommit?'这次提交改了什么？':'当前分支状态如何？'"></span><i data-lucide="arrow-up-right"></i></button>
-      <template x-for="m in s.messages" :key="m.id"><div class="message" :class="{'outgoing':m.who==='你'}"><small x-text="m.who"></small><p x-text="m.text||'正在回答…'"></p></div></template></div>
+    <section class="chatpane" aria-label="Agent 问答" x-show="s.view==='chat'"><div class="chathead">
+      <h2><i data-lucide="folder-git-2"></i><span x-text="project?.name"></span></h2>
+      <div>
+        <select class="agent-choice" x-ref="agentChoice" aria-label="选择 Agent" :disabled="scanningAgents||switchingAgent||!agentOptions.length" @change="chooseAgent($event)">
+          <template x-if="!agentOptions.length"><option value="" disabled x-text="scanningAgents?'正在查找 Agent…':'未发现可用 Agent'"></option></template>
+          <template x-for="option in agentOptions" :key="option.kind"><option :value="option.kind" x-text="option.label+(option.questions?'':' · 终端')"></option></template>
+        </select>
+        <button @click="toggleChat()" title="收起对话" aria-label="收起对话"><i data-lucide="x"></i></button>
+      </div>
+    </div>
+      <div class="chatbody" x-ref="messages"><button class="prompt" x-show="project&&selectedAgentOption?.questions!==false" @click="ask(s.chatCommit?'这次提交改了什么？':'当前分支状态如何？')" :disabled="!!s.running"><span x-text="s.chatCommit?'这次提交改了什么？':'当前分支状态如何？'"></span><i data-lucide="arrow-up-right"></i></button>
+      <template x-for="m in s.messages" :key="m.id">
+        <div class="message" :class="{'outgoing':m.who==='你'}">
+          <small x-show="m.who!=='你'" x-text="m.who"></small>
+          <template x-if="m.markdown"><div class="agent-markdown" x-html="renderAgentMarkdown(m.markdown)"></div></template>
+          <p x-show="!m.markdown||m.text" x-text="m.text||'正在回答…'"></p>
+          <button type="button" class="prompt agent-login-button" x-show="m.authRequired&&selectedAgent==='antigravity'" :disabled="!!s.running" @click="openAgentLogin(m)">登录 Antigravity</button>
+        </div>
+      </template></div>
       <p class="compose-context" x-show="s.selected.length" x-text="'已选择 '+s.selected.length+' 项工作区改动'"></p>
       <div class="compose-context inline-actions" x-show="s.chatCommit"><span x-text="'引用提交 · '+short(s.chatCommit)"></span><button @click="s.chatCommit=null" title="移除提交引用" aria-label="移除提交引用"><i data-lucide="x"></i></button></div>
-      <form class="composer" @submit.prevent="ask(s.draft)"><input x-model="s.draft" aria-label="输入问题" :placeholder="s.chatCommit?'询问这条提交…':'询问当前项目…'" :disabled="!project"><button x-show="!s.running" :disabled="!project||!s.draft.trim()" title="发送" aria-label="发送"><i data-lucide="arrow-up"></i></button><button type="button" x-show="s.running" @click="cancel()" title="停止回答" aria-label="停止回答"><i data-lucide="square"></i></button></form>
+      <button type="button" class="prompt" x-show="selectedAgentOption?.questions===false&&!s.running" @click="openAgentTerminal()">在终端打开 <span x-text="selectedAgentOption?.label"></span></button>
+      <form class="composer" x-show="selectedAgentOption?.questions!==false||s.running" @submit.prevent="ask(s.draft)"><input x-ref="agentInput" x-model="s.draft" aria-label="输入问题" :placeholder="s.chatCommit?'询问这条提交…':'询问当前项目…'" :disabled="!project"><button x-show="!s.running" :disabled="!project||switchingAgent||!s.draft.trim()" title="发送" aria-label="发送"><i data-lucide="arrow-up"></i></button><button type="button" x-show="s.running" @click="cancel()" title="停止回答" aria-label="停止回答"><i data-lucide="square"></i></button></form>
     </section>
     <section class="dock" x-show="project" :class="{'opened':s.term}">
       <div class="dockbar"><button class="docktab" @click="toggleTerminal()" :disabled="!project" :aria-expanded="s.term"><i data-lucide="square-terminal"></i>终端</button><span class="grow"></span><span x-show="s.term">shell</span><button x-show="s.term" @click="closeTerminal()" aria-label="关闭终端进程" title="关闭终端进程"><i data-lucide="x"></i></button><button @click="toggleTerminal()" :disabled="!project" :title="s.term?'收起终端':'展开终端'" :aria-label="s.term?'收起终端':'展开终端'"><i data-lucide="chevron-up"></i></button></div>
@@ -355,12 +372,11 @@
     <button class="prompt search-more" x-show="query.trim()&&!matches.length&&searchScope==='project'" @click="changeSearchScope('all')">在所有项目中搜索</button>
   </section>
 </dialog>
-<dialog class="scrim" x-ref="settingsDialog" aria-labelledby="settings-title" @cancel.prevent="closeSettings()" @click.self="closeSettings()">
-  <form class="settings-sheet glass" @submit.prevent="saveClaudePath()">
-    <div class="caption"><h2 id="settings-title">Claude 设置</h2><button type="button" class="icon-button" @click="closeSettings()" title="关闭设置" aria-label="关闭设置"><i data-lucide="x"></i></button></div>
-    <label for="claude-path">Claude Code 可执行文件路径</label>
-    <input id="claude-path" x-ref="claudePath" x-model="pathDraft" :disabled="savingPath" @input="pathError=''" :aria-invalid="!!pathError" :aria-describedby="pathError?'path-help path-error':'path-help'" autocomplete="off" spellcheck="false" placeholder="/usr/local/bin/claude">
-    <p id="path-help">留空时自动查找本机安装的 Claude Code。</p><p class="field-error" id="path-error" x-show="pathError" role="alert" x-text="pathError"></p>
-    <div class="sheet-actions"><button type="button" class="prompt" @click="closeSettings()">取消</button><button class="primary" :disabled="savingPath" x-text="savingPath?'保存中…':'保存'"></button></div>
-  </form>
+<dialog class="scrim" x-ref="agentLoginDialog" aria-labelledby="agent-login-title" aria-describedby="agent-login-help" @cancel.prevent="closeAgentLogin()">
+  <section class="settings-sheet glass agent-login-sheet" :class="{'agent-terminal-sheet':agentTerminalMode}">
+    <div class="caption"><h2 id="agent-login-title" x-text="agentTerminalMode?selectedAgentOption?.label:'登录 Antigravity'"></h2><button type="button" class="icon-button" @click="closeAgentLogin()" :aria-label="agentTerminalMode?'关闭 Agent 终端':'关闭登录'"><i data-lucide="x"></i></button></div>
+    <p id="agent-login-help" x-show="!agentTerminalMode">在浏览器的 Google 页面复制授权码。回到这里，点击下方区域，按 ⌘V 粘贴，再按回车。</p>
+    <div class="terminal-stack" x-ref="agentLoginTerminal"></div>
+    <p class="field-error" role="alert" x-show="agentLoginError" x-text="agentLoginError"></p>
+  </section>
 </dialog>

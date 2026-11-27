@@ -475,3 +475,31 @@ fn rfc0006_line_origin_preserves_index_trailing_lines_and_rename_sides() {
         .iter()
         .any(|line| line.old == Some(3) && line.new == Some(3)));
 }
+#[test]
+fn remembers_only_the_selected_agent_kind() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("settings.json");
+    std::fs::write(
+        &file,
+        r#"{"projects":[],"selected":null,"claudePath":"/opt/Agent Tools/claude"}"#,
+    )
+    .unwrap();
+    let mut settings: crate::workspace::Settings = crate::workspace::load(&file).unwrap();
+    assert_eq!(settings.agent_kind, None);
+    settings.agent_kind = Some(crate::agent::Kind::Antigravity);
+    crate::workspace::save(&file, &settings).unwrap();
+    let saved: serde_json::Value = crate::workspace::load(&file).unwrap();
+    assert_eq!(saved["agentKind"], "antigravity");
+    assert!(saved.get("claudePath").is_none());
+    assert!(saved.get("agent").is_none());
+}
+#[test]
+fn recognizes_the_antigravity_login_error() {
+    use crate::agent::Kind;
+
+    let stderr = "Error: authentication required. Run 'agy' to log in, then retry.\nerror: authentication failed or timed out";
+    assert!(Kind::Antigravity.needs_login(stderr));
+    assert!(!Kind::Antigravity.needs_login("authentication failed or timed out"));
+    assert!(!Kind::Antigravity.needs_login("context deadline exceeded"));
+    assert!(!Kind::Codex.needs_login(stderr));
+}

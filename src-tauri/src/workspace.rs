@@ -1,4 +1,4 @@
-use crate::git;
+use crate::{agent, git};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use std::{
     fs,
@@ -22,7 +22,7 @@ pub struct Settings {
     pub projects: Vec<Project>,
     pub selected: Option<String>,
     #[serde(default)]
-    pub claude_path: Option<PathBuf>,
+    pub agent_kind: Option<agent::Kind>,
 }
 
 fn schema_version() -> u32 {
@@ -35,7 +35,7 @@ impl Default for Settings {
             schema_version: 1,
             projects: Vec::new(),
             selected: None,
-            claude_path: None,
+            agent_kind: None,
         }
     }
 }

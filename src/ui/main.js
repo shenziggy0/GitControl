@@ -6,13 +6,16 @@ import {
   ChevronLeft, ChevronRight, ChevronUp, CircleCheck, Cloud, CornerDownLeft, FileDiff, Files,
   FileText, FolderGit2, FolderOpen, GitBranch, GitCommitHorizontal, GitCompareArrows,
   GitGraph, GitPullRequest, History, Layers, LayoutDashboard, ListFilter, MessageSquare, Monitor, Moon, PanelLeft,
-  Plus, RefreshCw, Search, Settings, Square, SquareTerminal, Sun, Tag, X
+  Plus, RefreshCw, Search, Square, SquareTerminal, Sun, Tag, X
 } from 'lucide';
 import template from './workspace.html?raw';
 import diffTemplate from './diff-panel.html?raw';
 import { workbench, workbenchSession } from './workbench.js';
 import { mountGraph } from './graph.js';
+import { renderAgentMarkdown } from './markdown.js';
 import { showTerminal, closeTerminal, updateTerminalAppearance } from './terminal.js';
+
+const agentLoginTerminal = 'antigravity-login';
 import './style.css';
 
 const PAGE_SIZE = 60;
@@ -70,10 +73,13 @@ function branchPairs(s) {
 Alpine.data('workspace',()=>Object.defineProperties({
   projects:[], sessions:{}, projectId:null, empty:session(), sidebar:true, projectsOpen:true,
   branchesOpen:true, remotesOpen:false, tagsOpen:false, palette:false, query:'', notice:'',
-  pane:'editor', appearance:'system', selectedSearchKey:null, loadingProjects:isTauri(), claudeExecutable:null,
-  pathDraft:'', pathError:'', savingPath:false,
+  pane:'editor', appearance:'system', selectedSearchKey:null, loadingProjects:isTauri(),
+  agentOptions:[], selectedAgent:'', scanningAgents:false, switchingAgent:false, lastAgentScan:0,
+  agentLoginError:'', agentTerminalMode:false,
+  renderAgentMarkdown,
   selectionVersion:0, openingChild:false,
   get project(){return this.projects.find(p=>p.id===this.projectId)},
+  get selectedAgentOption(){return this.agentOptions.find(option=>option.kind===this.selectedAgent);},
   get s(){return this.sessions[this.projectId]||this.empty},
   get visiblePane(){return compactLayout.matches ? this.pane : 'editor';},
   get active(){return this.s.repo?.kind==='git'&&!this.s.error},
@@ -247,7 +253,7 @@ Alpine.data('workspace',()=>Object.defineProperties({
       });
       const config=await invoke('project_list');
       this.projects=config.projects;
-      this.claudeExecutable=config.claudePath;
+      void this.discoverAgents();
       const id=config.selected||this.projects[0]?.id;
       if(id)await this.selectProject(id);
     } catch(error){this.report(error);}
@@ -269,7 +275,7 @@ Alpine.data('workspace',()=>Object.defineProperties({
     if (pane!=='editor' || !compactLayout.matches) return;
     const s=this.s, view=s.view, detail=this.detailView;
     this.$nextTick(()=>{
-      if (this.s!==s || this.pane!=='editor' || this.palette || this.$refs.settingsDialog.open) return;
+      if (this.s!==s || this.pane!=='editor' || this.palette) return;
       if (!editorWasVisible && s.view===view && this.detailView===detail) {
         const buffer=this.editorBuffer(view);
         if (buffer) buffer.scrollTop=view==='status' ? s.statusScroll : detail?.scroll??0;
@@ -546,7 +552,7 @@ Alpine.data('workspace',()=>Object.defineProperties({
       s.focusSha=sha=index>=0 ? origin.sha : null;
     }
     this.$nextTick(()=>{
-      if (this.s!==s || this.pane!==pane || this.palette || this.$refs.settingsDialog.open) return;
+      if (this.s!==s || this.pane!==pane || this.palette) return;
       if (pane==='history') {
         if (origin.revision===s.revision && s.scope===origin.scope && s.page===origin.page) {
           this.$refs.historyList.scrollTop=origin.scroll;
@@ -676,7 +682,7 @@ Alpine.data('workspace',()=>Object.defineProperties({
     if (detail) await this.loadDiff(detail);
   },
   openSearch(trigger){
-    if (this.$refs.settingsDialog.open) return;
+    if (this.$refs.agentLoginDialog.open) return;
     searchExit?.effect?.target?.remove();
     searchExit?.cancel();
     searchExit=null;
@@ -783,6 +789,7 @@ Alpine.data('workspace',()=>Object.defineProperties({
     this.goPane('editor');
     s.chat=true;
     s.view='chat';
+    void this.discoverAgents();
   },
   toggleChat(){
     const s=this.s;
@@ -806,42 +813,88 @@ Alpine.data('workspace',()=>Object.defineProperties({
   syncTerminal(stealFocus=true){
     const id=this.projectId;
     showTerminal(id,this.s.term,this.$refs.terminals,error=>this.report(error),
-      ()=>stealFocus&&this.projectId===id&&this.s.term&&!this.palette&&!this.$refs.settingsDialog.open&&(!compactLayout.matches||this.pane==='editor'));
+      ()=>stealFocus&&this.projectId===id&&this.s.term&&!this.palette&&(!compactLayout.matches||this.pane==='editor'));
   },
   async closeTerminal(){this.s.term=false;try{await closeTerminal(this.projectId);}catch(error){this.report(error);}},
-  configureClaude(){
-    this.pathDraft=this.claudeExecutable||'';
-    this.pathError='';
-    this.$refs.settingsDialog.showModal();
-    this.$refs.claudePath.focus();
-  },
-  closeSettings(){
-    if (this.savingPath) return;
-    this.$refs.settingsDialog.close();
-    this.$refs.settingsTrigger.focus({preventScroll:true});
-  },
-  async saveClaudePath(){
-    if (this.savingPath) return;
-    const path=this.pathDraft.trim()||null;
-    this.savingPath=true;
+  async discoverAgents(){
+    if (!isTauri() || this.scanningAgents || this.switchingAgent || Date.now()-this.lastAgentScan<10000) return;
+    this.scanningAgents=true;
     try {
-      await invoke('claude_path',{path});
-      this.claudeExecutable=path;
-      this.savingPath=false;
-      this.closeSettings();
-    } catch(error){this.pathError=String(error);}
-    finally {this.savingPath=false;}
+      const {options, selected}=await invoke('agent_list');
+      this.agentOptions=options;
+      this.selectedAgent=selected||'';
+      this.lastAgentScan=Date.now();
+      this.$nextTick(()=>{this.$refs.agentChoice.value=this.selectedAgent;});
+    } catch(error){this.report(error);}
+    finally {this.scanningAgents=false;}
+  },
+  async chooseAgent(event){
+    const choice=event.target;
+    const kind=choice.value;
+    if (!kind || kind===this.selectedAgent) return;
+    this.switchingAgent=true;
+    try {
+      await invoke('agent_select',{kind});
+      this.selectedAgent=kind;
+    } catch(error){
+      choice.value=this.selectedAgent;
+      this.report(error);
+    }
+    finally {this.switchingAgent=false;}
+  },
+  async openAgentLogin(message){
+    const dialog=this.$refs.agentLoginDialog;
+    if (dialog.open) return;
+    const session=this.s;
+    this.agentTerminalMode=false;
+    this.agentLoginError='';
+    dialog.showModal();
+    await showTerminal(agentLoginTerminal,true,this.$refs.agentLoginTerminal,
+      error=>{this.agentLoginError=String(error);},()=>dialog.open,{
+        command:'agent_login_open',
+        onExit:exit=>{
+          if (exit !== 0) {
+            this.agentLoginError='登录未完成。可以关闭窗口后再试一次。';
+            return;
+          }
+          message.authRequired=false;
+          message.text='Antigravity 已登录。可以重新发送问题。';
+          if (!session.draft) session.draft=message.question;
+          void this.closeAgentLogin();
+        }
+      });
+  },
+  async openAgentTerminal(){
+    const dialog=this.$refs.agentLoginDialog;
+    if (dialog.open || this.selectedAgentOption?.questions !== false) return;
+    this.agentTerminalMode=true;
+    this.agentLoginError='';
+    dialog.showModal();
+    await showTerminal(agentLoginTerminal,true,this.$refs.agentLoginTerminal,
+      error=>{this.agentLoginError=String(error);},()=>dialog.open,{
+        command:'agent_terminal_open',
+        args:{projectId:this.projectId}
+      });
+  },
+  async closeAgentLogin(){
+    this.$refs.agentLoginDialog.close();
+    try {await closeTerminal(agentLoginTerminal);}
+    catch(error){this.report(error);}
+    if (this.agentTerminalMode) this.$refs.agentChoice.focus({preventScroll:true});
+    else this.$refs.agentInput.focus({preventScroll:true});
   },
   scrollChat(){this.$nextTick(()=>{const area=this.$refs.messages;if(area)area.scrollTop=area.scrollHeight;});},
   async ask(question,purpose=null){
     const text=question.trim(), id=this.projectId, s=this.s;
-    if(!text||!id||s.running)return;
+    if(!text||!id||s.running||this.switchingAgent)return;
     const requestId=crypto.randomUUID(), events=new Channel();
     s.draft='';s.running=requestId;
-    s.messages.push({id:requestId+':user',who:'你',text},{id:requestId+':assistant',who:'Claude',text:''});
+    s.messages.push({id:requestId+':user',who:'你',text},{id:requestId+':assistant',who:'Agent',text:'',markdown:'',question:text});
     const answer=s.messages.at(-1);
     events.onmessage=event=>{
-      if(event.kind==='delta')answer.text+=event.text;
+      if(event.kind==='started')answer.who=event.agent;
+      if(event.kind==='delta')answer.markdown+=event.text;
+      if(event.kind==='auth_required')answer.authRequired=true;
       if(event.kind==='commit'){
         answer.who='Git';
         answer.text='已提交 '+this.short(event.oid)+' · '+event.message;
@@ -850,7 +903,7 @@ Alpine.data('workspace',()=>Object.defineProperties({
       if(this.projectId===id)this.scrollChat();
     };
     try {await invoke('agent_send',{projectId:id,requestId,question:text,selected:s.selected,commitOid:s.chatCommit,purpose,events});}
-    catch(error){answer.text+= (answer.text?'\n':'')+String(error);}
+    catch(error){answer.text=String(error);}
     finally{s.running=null;if(this.projectId===id)this.scrollChat();}
   },
   async cancel(){if(this.s.running)try{await invoke('agent_cancel',{projectId:this.projectId,requestId:this.s.running});}catch(error){this.report(error);}}
@@ -868,7 +921,7 @@ createIcons({
     ArrowDownToLine, ArrowLeft, ArrowUp, ArrowUpFromLine, ArrowUpRight, ChevronLeft, ChevronRight,
     ChevronUp, CircleCheck, Cloud, CornerDownLeft, FileDiff, Files, FileText, FolderGit2, FolderOpen,
     GitBranch, GitCommitHorizontal, GitCompareArrows, GitGraph, GitPullRequest, History, Layers, LayoutDashboard,
-    ListFilter, MessageSquare, Monitor, Moon, PanelLeft, Plus, RefreshCw, Search, Settings,
+    ListFilter, MessageSquare, Monitor, Moon, PanelLeft, Plus, RefreshCw, Search,
     Square, SquareTerminal, Sun, Tag, X
   }
 });

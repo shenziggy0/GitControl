@@ -14,7 +14,7 @@ use std::{
     collections::{HashMap, HashSet},
     path::{Path, PathBuf},
     sync::{
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         Arc, Mutex,
     },
     time::Duration,
@@ -24,6 +24,8 @@ use tauri_plugin_dialog::DialogExt;
 use workspace::{Project, Settings};
 
 type Result<T> = std::result::Result<T, String>;
+const AGENT_LOGIN_TERMINAL: &str = "antigravity-login";
+
 #[derive(Clone)]
 struct Request {
     pid: agent::Running,
@@ -38,6 +40,29 @@ struct Journal {
     running: bool,
 }
 
+#[derive(Serialize)]
+struct AgentChoices {
+    options: Vec<agent::Choice>,
+    selected: Option<agent::Kind>,
+}
+
+#[derive(Clone)]
+enum AgentSession {
+    Native(String),
+    LastExchange(String),
+}
+
+fn active_agent(
+    preference: Option<agent::Kind>,
+    installed: &[agent::Installed],
+) -> Option<&agent::Installed> {
+    installed
+        .iter()
+        .find(|cli| Some(cli.kind) == preference)
+        .or_else(|| installed.iter().find(|cli| cli.questions))
+        .or_else(|| installed.first())
+}
+
 struct App {
     root: PathBuf,
     settings: Mutex<Settings>,
@@ -46,7 +71,9 @@ struct App {
     watcher: Mutex<Option<RecommendedWatcher>>,
     terminal: Mutex<HashMap<String, terminal::Terminal>>,
     agents: Mutex<HashMap<String, Request>>,
-    sessions: Mutex<HashMap<String, String>>,
+    sessions: Mutex<HashMap<String, AgentSession>>,
+    installed_agents: Mutex<Vec<agent::Installed>>,
+    agent_generation: AtomicU64,
     journal: Mutex<HashMap<String, Journal>>,
     writes: Mutex<HashSet<PathBuf>>,
     push_previews: Mutex<HashMap<String, (String, git::SyncPreview)>>,
@@ -67,9 +94,17 @@ impl App {
         let mut settings = slot.clone();
         let result = edit(&mut settings)?;
         workspace::save(&self.root.join("settings.json"), &settings)?;
+        if slot.agent_kind != settings.agent_kind {
+            self.reset_agent_sessions();
+        }
         *slot = settings;
         Ok(result)
     }
+    fn reset_agent_sessions(&self) {
+        self.agent_generation.fetch_add(1, Ordering::SeqCst);
+        self.sessions.lock().unwrap().clear();
+    }
+
     fn save_journal(&self, key: String, record: Journal) -> Result<()> {
         let mut entries = self.journal.lock().unwrap();
         let previous = entries.insert(key.clone(), record);
@@ -521,18 +556,115 @@ fn terminal_close(state: State<App>, project_id: String, id: String) {
 }
 
 #[tauri::command]
-fn claude_path(state: State<App>, path: Option<PathBuf>) -> Result<()> {
-    if let Some(p) = &path {
-        if !p.is_absolute() || !p.is_file() {
-            return Err("请输入 Claude Code 可执行文件的绝对路径。".into());
-        }
-    }
-    state.update(|s| {
-        s.claude_path = path;
-        Ok(())
-    })?;
-    Ok(())
+fn agent_login_open(
+    state: State<App>,
+    rows: u16,
+    cols: u16,
+    events: Channel<Value>,
+) -> Result<String> {
+    let path = state
+        .installed_agents
+        .lock()
+        .unwrap()
+        .iter()
+        .find(|cli| cli.kind == agent::Kind::Antigravity)
+        .map(|cli| cli.path.clone())
+        .ok_or("找不到 Antigravity CLI。")?;
+    let mut command = portable_pty::CommandBuilder::new(path.as_os_str());
+    command.args(["acp", "--login"]);
+    command.cwd(std::env::temp_dir());
+    command.env("PATH", agent::cli_path(&path));
+    open_agent_terminal(state, command, rows, cols, events)
 }
+
+#[tauri::command]
+fn agent_terminal_open(
+    state: State<App>,
+    project_id: String,
+    rows: u16,
+    cols: u16,
+    events: Channel<Value>,
+) -> Result<String> {
+    let project = state.project(&project_id)?;
+    let settings = state.settings.lock().unwrap();
+    let installed = state.installed_agents.lock().unwrap();
+    let cli = active_agent(settings.agent_kind, &installed)
+        .filter(|cli| !cli.questions)
+        .cloned()
+        .ok_or("当前 Agent 可以直接在问答中使用。")?;
+    drop(installed);
+    drop(settings);
+    let mut command = portable_pty::CommandBuilder::new(cli.path.as_os_str());
+    if cli.kind == agent::Kind::DeepSeek {
+        command.args(["--profile", "tui"]);
+    }
+    command.cwd(&project.path);
+    command.env("PATH", agent::cli_path(&cli.path));
+    open_agent_terminal(state, command, rows, cols, events)
+}
+
+fn open_agent_terminal(
+    state: State<App>,
+    command: portable_pty::CommandBuilder,
+    rows: u16,
+    cols: u16,
+    events: Channel<Value>,
+) -> Result<String> {
+    let terminal = terminal::Terminal::open_command(command, rows, cols, events)?;
+    let id = terminal.id.clone();
+    state
+        .terminal
+        .lock()
+        .unwrap()
+        .insert(AGENT_LOGIN_TERMINAL.into(), terminal);
+    Ok(id)
+}
+
+#[tauri::command]
+async fn agent_list(app: AppHandle) -> Result<AgentChoices> {
+    background(move || {
+        let installed = agent::discover();
+        let state = app.state::<App>();
+        let settings = state.settings.lock().unwrap();
+        let mut cached = state.installed_agents.lock().unwrap();
+        let selected = active_agent(settings.agent_kind, &installed);
+        if active_agent(settings.agent_kind, &cached) != selected {
+            state.reset_agent_sessions();
+        }
+        let choices = AgentChoices {
+            options: installed
+                .iter()
+                .map(|cli| agent::Choice {
+                    kind: cli.kind,
+                    label: cli.kind.label(),
+                    questions: cli.questions,
+                })
+                .collect(),
+            selected: selected.map(|cli| cli.kind),
+        };
+        *cached = installed;
+        Ok(choices)
+    })
+    .await
+}
+
+#[tauri::command]
+fn agent_select(state: State<App>, kind: agent::Kind) -> Result<()> {
+    state.update(|settings| {
+        if !state
+            .installed_agents
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|cli| cli.kind == kind)
+        {
+            return Err("此 Agent 已不可用，请重新打开问答。".into());
+        }
+        settings.agent_kind = Some(kind);
+        Ok(())
+    })
+}
+
 #[tauri::command]
 async fn agent_send(
     app: AppHandle,
@@ -551,14 +683,26 @@ async fn agent_send(
         writes: Arc::new(AtomicBool::new(false)),
         id: request_id.clone(),
     };
-    {
+    let (cli, generation, session) = {
         let state = app.state::<App>();
         let mut agents = state.agents.lock().unwrap();
         if agents.contains_key(&project_id) {
             return Err("当前项目已有请求正在处理。".into());
         }
         agents.insert(project_id.clone(), request.clone());
-    }
+        let settings = state.settings.lock().unwrap();
+        let installed = state.installed_agents.lock().unwrap();
+        let session = if purpose.as_deref() == Some("commit_message") {
+            None
+        } else {
+            state.sessions.lock().unwrap().get(&project_id).cloned()
+        };
+        (
+            active_agent(settings.agent_kind, &installed).cloned(),
+            state.agent_generation.load(Ordering::SeqCst),
+            session,
+        )
+    };
     background(move||{
         let state=app.state::<App>();
         let result=(||{
@@ -587,10 +731,6 @@ async fn agent_send(
                     .transpose()
                     .map_err(|_|"无法读取引用的提交，请重新选择或移除引用。".to_string())?;
                 if request.canceled.load(Ordering::SeqCst){return Err("已停止回答。".into())}
-                let _=events.send(json!({"kind":"started"}));
-                let executable=state.settings.lock().unwrap().claude_path.clone();
-                let existing=state.sessions.lock().unwrap().get(&project_id).cloned();
-                let session=existing.clone().unwrap_or_else(||uuid::Uuid::new_v4().to_string());
                 let refs=state.remotes.lock().unwrap().iter().filter(|(k,_)|k.starts_with(&format!("{project_id}/")))
                     .map(|(_,r)|json!({"remote":r.name,"timestamp":r.timestamp,"refs":r.refs})).collect::<Vec<_>>();
                 let status=json!({"branch":snapshot.branch,"head":snapshot.head,"files":snapshot.files.iter().take(100).map(|f|json!({"path":f.path,"group":f.group})).collect::<Vec<_>>(),"total_rows":snapshot.files.len(),"remote_last_verified":refs});
@@ -607,9 +747,48 @@ async fn agent_send(
                         context.push_str(&format!("\n{}（{}）\n{}", change.path, change.group, patch.chars().take(2200).collect::<String>()));
                     }
                 }
-                let result=agent::answer(&project,executable.as_deref(),&session,existing.is_some(),&context,&events,&request.pid,&request.canceled);
-                if result.is_ok()&&state.project(&project_id).is_ok(){state.sessions.lock().unwrap().insert(project_id.clone(),session);}
-                result
+                let cli = cli.ok_or("没有找到可用的 Agent CLI。")?;
+                if !cli.questions {
+                    return Err(format!("{} 已安装，可以在终端中使用。", cli.kind.label()));
+                }
+                let session_id = match session {
+                    Some(AgentSession::Native(ref id)) => Some(id.as_str()),
+                    Some(AgentSession::LastExchange(ref exchange)) => {
+                        context = format!("上一轮问答（供参考）：\n{exchange}\n\n{context}");
+                        None
+                    }
+                    None => None,
+                };
+                let _ = events.send(json!({"kind":"started","agent":cli.kind.label()}));
+                let reply = agent::answer(
+                    &project, &cli, session_id, &context,
+                    |text| { let _ = events.send(json!({"kind":"delta","text":text})); },
+                    &request.pid, &request.canceled,
+                ).map_err(|error| {
+                    if cli.kind.needs_login(&error) {
+                        let _ = events.send(json!({"kind":"auth_required"}));
+                        "请先在 Agent 问答中登录 Antigravity，再重新发送。".into()
+                    } else if cli.kind == agent::Kind::Antigravity && error.to_ascii_lowercase().contains("authentication failed or timed out") {
+                        "Antigravity 暂时无法确认本机登录状态。请稍后重新发送。".into()
+                    } else {
+                        error
+                    }
+                })?;
+                if purpose.as_deref() != Some("commit_message") {
+                    let settings = state.settings.lock().unwrap();
+                    if state.agent_generation.load(Ordering::SeqCst) == generation
+                        && settings.projects.iter().any(|p| p.id == project_id)
+                        && !request.canceled.load(Ordering::SeqCst)
+                    {
+                        let session = reply.session_id.map(AgentSession::Native).unwrap_or_else(|| {
+                            let question = question.chars().take(1500).collect::<String>();
+                            let text = reply.text.chars().take(2500).collect::<String>();
+                            AgentSession::LastExchange(format!("用户：{question}\nAgent：{text}"))
+                        });
+                        state.sessions.lock().unwrap().insert(project_id.clone(), session);
+                    }
+                }
+                Ok(())
             }
         })();
         state.agents.lock().unwrap().remove(&project_id);
@@ -661,6 +840,8 @@ fn main() {
                 terminal: Mutex::default(),
                 agents: Mutex::default(),
                 sessions: Mutex::default(),
+                installed_agents: Mutex::default(),
+                agent_generation: AtomicU64::default(),
                 journal: Mutex::new(journal),
                 writes: Mutex::default(),
                 push_previews: Mutex::default(),
@@ -686,7 +867,10 @@ fn main() {
             terminal_write,
             terminal_resize,
             terminal_close,
-            claude_path,
+            agent_list,
+            agent_select,
+            agent_login_open,
+            agent_terminal_open,
             agent_send,
             agent_cancel,
             workbench::repo_commit_selected,
